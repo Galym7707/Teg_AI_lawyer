@@ -1,0 +1,24 @@
+{
+  "name": "kaz-legal-bot-frontend",
+  "version": "1.0.0",
+  "description": "Frontend for Kaz Legal Bot - Kazakhstan Legal Assistant",
+  "main": "index.html",
+  "scripts": {
+    "dev": "python -m http.server 3000",
+    "build": "echo 'No build step required for static site'",
+    "start": "echo 'Static site - no start command needed'"
+  },
+  "keywords": [
+    "legal",
+    "kazakhstan",
+    "ai",
+    "chatbot",
+    "law"
+  ],
+  "author": "Kaz Legal Bot Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
+

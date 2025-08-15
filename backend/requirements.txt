@@ -1,0 +1,10 @@
+Flask
+google-generativeai
+pymongo
+python-dotenv
+PyPDF2
+python-docx
+lxml
+Pillow
+
+

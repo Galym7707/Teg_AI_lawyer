@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "api/[...path].js": {
+      "maxDuration": 30
+    }
+  },
+  "env": {
+    "BACKEND_URL": "@backend_url"
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/[...path]"
+    }
+  ]
+}
+

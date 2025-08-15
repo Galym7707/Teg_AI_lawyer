@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kaz Legal Bot - Юридический помощник Казахстана</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚖️</text></svg>">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="header-content">
+                <div class="logo">
+                    <span class="logo-icon">⚖️</span>
+                    <h1>Kaz Legal Bot</h1>
+                </div>
+                <p class="subtitle">Юридический помощник по законодательству Казахстана</p>
+            </div>
+        </header>
+
+        <main class="chat-container">
+            <div class="chat-messages" id="chat-history">
+                <div class="welcome-message">
+                    <div class="welcome-icon">👋</div>
+                    <h2>Добро пожаловать!</h2>
+                    <p>Я помогу вам разобраться с вопросами по законодательству Казахстана. Задайте свой вопрос, и я предоставлю подробную юридическую консультацию.</p>
+                    <div class="example-questions">
+                        <h3>Примеры вопросов:</h3>
+                        <div class="question-tags">
+                            <span class="question-tag" onclick="askQuestion('Как правильно уволиться с работы?')">Увольнение с работы</span>
+                            <span class="question-tag" onclick="askQuestion('Какие права у арендатора жилья?')">Права арендатора</span>
+                            <span class="question-tag" onclick="askQuestion('Как подать на алименты?')">Алименты</span>
+                            <span class="question-tag" onclick="askQuestion('Что делать при ДТП?')">ДТП</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="chat-input">
+                    <textarea 
+                        id="user-input" 
+                        placeholder="Опишите вашу юридическую ситуацию..."
+                        rows="1"
+                    ></textarea>
+                    <button id="send-button" class="send-button">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22,2 15,22 11,13 2,9"></polygon>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-footer">
+                    <span class="disclaimer">Консультации основаны на законодательстве Казахстана</span>
+                </div>
+            </div>
+        </main>
+
+        <div class="loading-overlay" id="loading-overlay">
+            <div class="loading-spinner"></div>
+            <p>Анализирую ваш вопрос...</p>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
