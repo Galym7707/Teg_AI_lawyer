@@ -8,3 +8,4 @@ bleach
 flask-cors
 gunicorn
 rank-bm25
+requests

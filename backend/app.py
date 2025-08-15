@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
-import os, time, json, logging
+import os
+import json
+import time
+import logging
 from typing import Dict, Tuple, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 
-from helpers import init_index, search_laws, build_html_answer, call_llm
+from helpers import (
+    init_index,
+    search_laws,
+    build_html_answer,
+    call_llm,
+    web_enrich_official_sources,
+)
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -22,9 +31,12 @@ else:
     CORS(app, supports_credentials=True)
     log.warning("⚠️  FRONTEND_ORIGIN не задан — CORS открыт для всех (dev only).")
 
-# единожды грузим индекс
 DOCS, INDEX = init_index()
 log.info("✅ Индекс готов: %d фрагментов", len(DOCS))
+
+# Параметры LLM
+_executor = ThreadPoolExecutor(max_workers=4)
+LLM_TIMEOUT_SEC = int(os.getenv("LLM_TIMEOUT_SEC", "28"))  # короткий таймаут против 504
 
 def _preview_bytes(b: bytes, limit: int = 500) -> str:
     try:
@@ -58,43 +70,57 @@ def json_error(status: int, code: str, message: str, debug: Dict = None):
 @app.route("/health", methods=["GET"])
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "laws_count": len(DOCS), "llm": True, "message": "alive"})
-
-_executor = ThreadPoolExecutor(max_workers=4)
-LLM_TIMEOUT_SEC = int(os.getenv("LLM_TIMEOUT_SEC", "30"))
+    llm_ready = bool(os.getenv("GEMINI_API_KEY"))
+    return jsonify({"ok": True, "laws_count": len(DOCS), "llm": llm_ready, "message": "alive"})
 
 def _handle_ask():
     started = time.time()
     payload, dbg = get_json_payload()
-    q = (payload.get("question") or "").strip()
-    if not q:
+    question = (payload.get("question") or "").strip()
+    if not question:
         return json_error(400, "MISSING_FIELD", "Поле 'question' обязательно и не должно быть пустым.", dbg)
-    log.info("👤 Вопрос: %s", q)
 
-    hits, intent = search_laws(q, DOCS, INDEX, top_k=5)
-    log.info("🔎 Найдено совпадений: %d", len(hits))
+    log.info("👤 Вопрос: %s", question)
 
-    # LLM с таймаутом
+    hits, intent = search_laws(question, DOCS, INDEX, top_k=5)
+    log.info("🔎 Совпадений: %d | intent: %s", len(hits), intent)
+
+    # Опционально обогащаем официальными источниками (если заданы ключи)
+    web_sources: List[Dict] = []
+    try:
+        web_sources = web_enrich_official_sources(question, limit=3)
+        if web_sources:
+            log.info("🌐 Веб-источники: %d", len(web_sources))
+    except Exception as e:
+        log.warning("web_enrich_official_sources failed: %s", e)
+
+    # Пытаемся собрать ответ через LLM (с таймаутом)
     llm_html = ""
     try:
-        fut = _executor.submit(call_llm, q, hits)
+        fut = _executor.submit(call_llm, question, hits, intent, web_sources)
         llm_html = fut.result(timeout=LLM_TIMEOUT_SEC) or ""
     except TimeoutError:
-        log.error("⏳ LLM timeout (%ss) — отдаю rule-based fallback", LLM_TIMEOUT_SEC)
+        log.error("⏳ LLM timeout (%ss) — отдаём rule-based fallback", LLM_TIMEOUT_SEC)
     except Exception as e:
         log.exception("LLM fail: %s", e)
 
-    answer_html = llm_html.strip() or build_html_answer(q, hits, intent)
+    answer_html = llm_html.strip() or build_html_answer(question, hits, intent, web_sources)
     took = int((time.time() - started) * 1000)
     log.info("✅ Ответ готов (%d симв) за %d мс", len(answer_html), took)
+
     return jsonify({
         "ok": True,
         "answer_html": answer_html,
         "matches": [
-            {"article_title": r.get("article_title"), "source": r.get("source"), "score": s}
+            {
+                "article_title": r.get("article_title"),
+                "law_title": r.get("law_title"),
+                "source": r.get("source"),
+                "score": s
+            }
             for r, s in hits
         ],
-        "intent": intent.get("name"),
+        "intent": intent,
         "took_ms": took
     })
 
