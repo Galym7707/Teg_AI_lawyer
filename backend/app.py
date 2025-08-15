@@ -1,199 +1,244 @@
 # -*- coding: utf-8 -*-
 """
-Flask-бэкенд для Teg AI Lawyer (минимум зависимостей, согласованный API).
-Маршруты:
-  GET  /api/health
-  POST /api/ask    -> принимает JSON { question, session_id? }, отдаёт JSON { html, used_articles }
+Kaz Legal Bot — Flask backend
+- Алиасы роутов: /ask и /chat (оба POST)
+- Здоровый CORS
+- Жирный дебаг входящих запросов (заголовки, превью тела)
+- Понятные JSON-ошибки с кодами
+- Загрузка законов из JSON (LAWS_PATH или ./laws/kazakh_laws.json)
+- Поиск: токенизация + взвешенное совпадение по title/text, n-best
+- HTML-ответ (без Markdown)
 """
-
-from __future__ import annotations
 import os
 import json
 import logging
-from typing import Dict, Any
-
+from typing import List, Dict, Tuple
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
+from collections import Counter
+import re
+import html
 
-# Законы и поиск
-from helpers import load_laws, LawIndex, laws_to_html_context, escape_html
-
-# Gemini (google-generativeai)
-import google.generativeai as genai
-
-
-# --------------------------- Логгер ---------------------------
-
+# ------------------------- ЛОГГИРОВАНИЕ -------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=LOG_LEVEL,
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 log = logging.getLogger(__name__)
 
+def _preview_bytes(b: bytes, limit: int = 600) -> str:
+    try:
+        t = b.decode("utf-8", errors="replace")
+    except Exception:
+        return f"<{len(b)} bytes, decode failed>"
+    t = t.strip().replace("\n", "\\n")
+    return (t[:limit] + ("…" if len(t) > limit else "")) or "<empty>"
 
-# --------------------------- Конфигурация ---------------------------
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-LAWS_PATH = os.getenv("LAWS_PATH", "laws/kazakh_laws.json").strip()
-
-# CORS: разрешаем Netlify/Vercel домен или всё (по необходимости)
-_front_origin = os.getenv("FRONT_ORIGIN", "").strip()
-if not _front_origin:
-    # можно перечислить несколько через запятую
-    _front_origin = os.getenv("CORS_ORIGINS", "https://teg-ai-lawyer.netlify.app").split(",")[0].strip()
-
+# ------------------------- ПРИЛОЖЕНИЕ -------------------------
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": _front_origin}},
-     supports_credentials=True)
 
-# --------------------------- Загрузка законов и инициализация модели ---------------------------
+# CORS: явно укажите домен фронта (Netlify/Vercel)
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "")
+if FRONTEND_ORIGIN:
+    CORS(app, origins=[FRONTEND_ORIGIN], supports_credentials=True)
+    log.info(f"✅ CORS включён для: {FRONTEND_ORIGIN}")
+else:
+    # на самый край – разрешить всё (на проде лучше задать FRONTEND_ORIGIN)
+    CORS(app, supports_credentials=True)
+    log.warning("⚠️  FRONTEND_ORIGIN не задан — CORS открыт для всех (dev only).")
+
+# ------------------------- ЗАКОНЫ -------------------------
+DEFAULT_LAWS_PATH = os.getenv("LAWS_PATH", "laws/kazakh_laws.json")
+
+def load_laws(path: str) -> List[Dict]:
+    log.info("Загрузка базы законов…")
+    if not os.path.exists(path):
+        # Попробуем относительный путь от корня приложения
+        alt = os.path.join(os.path.dirname(__file__), path)
+        if os.path.exists(alt):
+            path = alt
+        else:
+            raise FileNotFoundError(f"Не найден файл законов: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    # Ожидаем список объектов с полями: title, text, source
+    cleaned = []
+    for i, item in enumerate(data):
+        title = (item.get("title") or "").strip()
+        text  = (item.get("text")  or "").strip()
+        source = (item.get("source") or "").strip()
+        if not text:
+            continue
+        cleaned.append({"title": title, "text": text, "source": source})
+    return cleaned
 
 try:
-    log.info("Загрузка базы законов…")
-    LAWS = load_laws(LAWS_PATH)
-    INDEX = LawIndex(LAWS)
-    log.info("✅ Индекс законов готов: %d статей", len(LAWS))
+    LAWS: List[Dict] = load_laws(DEFAULT_LAWS_PATH)
+    log.info(f"✅ Индекс законов готов: {len(LAWS)} статей")
 except Exception as e:
-    log.exception("❌ Не удалось загрузить базу законов: %s", e)
-    LAWS, INDEX = [], None
+    LAWS = []
+    log.exception(f"❌ Не удалось загрузить законы: {e}")
 
-MODEL = None
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        MODEL = genai.GenerativeModel("gemini-1.5-flash")
-    except Exception as e:
-        log.exception("❌ Не удалось инициализировать модель: %s", e)
-else:
-    log.warning("⚠️ GEMINI_API_KEY не задан — ответы модели недоступны")
+# ------------------------- ПОИСК -------------------------
+_WORD_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
 
+def _tokens(s: str) -> List[str]:
+    return _WORD_RE.findall(s.lower())
 
-# --------------------------- Системная инструкция ---------------------------
+def _score_article(q_tokens: Counter, art: Dict) -> float:
+    """Взвешенное совпадение: title – в 2 раза важнее.
+    Плюс небольшой бонус за длину пересечения (уникальные совпавшие токены)."""
+    t_title = Counter(_tokens(art.get("title", "")))
+    t_text  = Counter(_tokens(art.get("text", "")))
 
-def build_system_instruction(law_context_html: str) -> str:
-    """
-    Жёстко заставляем модель отвечать ТОЛЬКО в HTML и по казахстанскому праву.
-    """
-    return (
-        "<p><strong>Роль:</strong> Ты — полноценный и официальный ИИ-юрист по законодательству исключительно Республики Казахстан.</p>"
-        "<p><strong>Задача:</strong> Дай чёткий ответ на вопрос пользователя, основываясь на законах РК.</p>"
-        "<p><strong>Правила:</strong></p>"
-        "<ul>"
-        "<li>Дай чёткую юридическую оценку: какие нормы применимы, есть ли нарушение, какая ответственность.</li>"
-        "<li>Сразу после оценки — что делать: шаги, куда идти/писать, какие документы приложить.</li>"
-        "<li>Дай практические и реальные советы. Также типичные ошибки и как их избежать</li>"
-        "<li><strong>Строго запрещён Markdown</strong>; используем только HTML-теги: "
-        "&lt;p&gt;, &lt;ul&gt;&lt;li&gt;, &lt;strong&gt;, &lt;em&gt;, &lt;h3&gt;.</li>"
-        "<li>Если уверенных оснований из законов нет — скажи об этом и предложи уточняющие вопросы, но всё равно дай базовый общий алгоритм действий, и попытайся хоть-как то помочь</li>"
-        "</ul>"
-        f"<h3>Контекст из базы законов (фрагменты):</h3>{law_context_html or '<p><em>Подходящих фрагментов не найдено.</em></p>'}"
+    # скалярное произведение
+    def dot(a: Counter, b: Counter) -> int:
+        return sum(min(a[k], b.get(k, 0)) for k in a)
+
+    title_part = 2.0 * dot(q_tokens, t_title)
+    text_part  = 1.0 * dot(q_tokens, t_text)
+
+    overlap = len(set(q_tokens) & set(t_title.keys() | t_text.keys()))
+    return title_part + text_part + 0.2 * overlap
+
+def search_laws(question: str, top_k: int = 3) -> List[Tuple[Dict, float]]:
+    if not LAWS:
+        return []
+    q_tokens = Counter(_tokens(question))
+    scored = [(art, _score_article(q_tokens, art)) for art in LAWS]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    # отбросим «мусор» с нулевым скором
+    scored = [x for x in scored if x[1] > 0]
+    return scored[:top_k]
+
+# ------------------------- ОТВЕТ -------------------------
+def _html_escape(s: str) -> str:
+    return html.escape(s, quote=True)
+
+def build_html_answer(question: str, hits: List[Tuple[Dict, float]]) -> str:
+    if not hits:
+        # допускаем ответ без прямых совпадений — короткая справка + просьба уточнить
+        return (
+            "<h3>Предварительная консультация</h3>"
+            f"<p>К сожалению, в предоставленной базе не нашлось прямых совпадений по вашему запросу: "
+            f"<em>{_html_escape(question)}</em>.</p>"
+            "<p>Опишите, пожалуйста, детали ситуации поконкретнее (даты, участники, документы). "
+            "Я попробую сузить поиск и дать точные ссылки на нормы права.</p>"
+        )
+
+    parts = [
+        "<h3>Анализ по базе законов РК</h3>",
+        f"<p><strong>Ваш вопрос:</strong> {_html_escape(question)}</p>",
+        "<ol>"
+    ]
+    for art, score in hits:
+        title  = _html_escape(art.get("title") or "Без названия")
+        source = _html_escape(art.get("source") or "")
+        text   = _html_escape(art.get("text")[:1000])  # превью текста (безопасный HTML)
+        parts.append(
+            "<li>"
+            f"<p><strong>Норма:</strong> {title}"
+            + (f" (<a href=\"{source}\" target=\"_blank\" rel=\"noopener\">источник</a>)" if source else "")
+            + f"</p>"
+            f"<p><em>Фрагмент:</em> {text}…</p>"
+            "</li>"
+        )
+    parts.append("</ol>")
+    parts.append(
+        "<p><strong>Важно:</strong> это автоматическая выборка по ключевым словам. "
+        "Если расскажете детали (вид договора, даты, статусы сторон), смогу точнее сослаться на нужные статьи.</p>"
+    )
+    return "".join(parts)
+
+# ------------------------- УТИЛИТЫ HTTP -------------------------
+def get_json_payload() -> Tuple[Dict, Dict]:
+    """Пытаемся корректно разобрать JSON и даём полезную диагностику."""
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    ctype = headers.get("content-type", "")
+    raw = request.get_data()  # bytes
+    log.debug(
+        "➡️  Incoming %s %s | CT: %s | H: %s | body: %s",
+        request.method, request.path, ctype, headers, _preview_bytes(raw)
     )
 
+    payload = None
+    err = None
+    try:
+        payload = request.get_json(silent=True, force=False)
+        if payload is None and raw:
+            # иногда фронт присылает text/plain с JSON внутри
+            payload = json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception as e:
+        err = f"JSON parse failed: {e}"
 
-# --------------------------- Маршруты ---------------------------
+    return payload or {}, {
+        "content_type": ctype,
+        "body_preview": _preview_bytes(raw),
+        "json_error": err,
+    }
 
-@app.route("/api/health", methods=["GET"])
-def api_health():
+def json_error(status: int, code: str, message: str, debug: Dict = None):
+    body = {"ok": False, "error": {"code": code, "message": message}}
+    if debug:
+        body["debug"] = debug
+    resp = make_response(jsonify(body), status)
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    return resp
+
+# ------------------------- РОУТЫ -------------------------
+@app.route("/health", methods=["GET"])
+def health():
     return jsonify({
         "ok": True,
-        "laws_loaded": len(LAWS),
-        "model_ready": bool(MODEL),
+        "laws_count": len(LAWS),
+        "message": "alive"
     })
 
+# Оба алиаса ведут к одному обработчику
+@app.route("/ask", methods=["POST", "OPTIONS"])
+@app.route("/chat", methods=["POST", "OPTIONS"])
+def ask():
+    if request.method == "OPTIONS":
+        # preflight
+        return ("", 204)
 
-def _get_json_body() -> Dict[str, Any]:
-    """
-    Принимаем JSON, а если пришло form-data/текст — пытаемся вытянуть question оттуда,
-    чтобы не падать на фронтовых мелочах.
-    """
-    if request.is_json:
-        try:
-            return request.get_json(silent=True) or {}
-        except Exception:
-            return {}
-    # form-data
-    if request.form:
-        return {"question": request.form.get("question", ""), "session_id": request.form.get("session_id", "")}
-    # сырой текст (на всякий случай)
-    data = request.get_data(as_text=True) or ""
-    if data.strip():
-        return {"question": data.strip()}
-    return {}
-
-
-@app.route("/api/ask", methods=["POST"])
-def api_ask():
-    if INDEX is None:
-        return jsonify({"error": "Законодательная база не загружена"}), 503
-
-    body = _get_json_body()
-    question = (body.get("question") or "").strip()
-    session_id = (body.get("session_id") or "").strip()
+    payload, dbg = get_json_payload()
+    question = (payload.get("question") or "").strip()
 
     if not question:
-        return jsonify({"error": "Поле 'question' обязательно"}), 400
-
-    log.info("Вопрос (%s): %s", session_id or "-", question)
-
-    # Поиск подходящих статей
-    results = INDEX.search(question, top_k=5, min_score=1.0)
-    context_html, used_articles = laws_to_html_context(results)
-
-    sys_prompt = build_system_instruction(context_html)
-
-    if not MODEL:
-        # Без модели всё равно вернём понятный HTML-ответ (off-model режим)
-        fallback = (
-            "<p><strong>Извините, модель временно недоступна.</strong></p>"
-            "<p>Ниже — фрагменты из релевантных законов, на основании которых вы можете ориентироваться:</p>"
-            f"{context_html or '<p>Подходящих фрагментов не найдено.</p>'}"
+        return json_error(
+            400, "MISSING_FIELD",
+            "Поле 'question' обязательно и не должно быть пустым.",
+            debug=dbg | {"payload_keys": list(payload.keys())}
         )
-        return jsonify({"html": fallback, "used_articles": used_articles})
 
     try:
-        # Собираем один HTML-запрос для модели: инструкция + вопрос.
-        prompt_html = (
-            f"{sys_prompt}"
-            f"<h3>Вопрос пользователя</h3>"
-            f"<p>{escape_html(question)}</p>"
-            "<p><em>Ответь строго в чистом HTML (без markdown), структурируй разделами и списками.</em></p>"
-        )
-
-        resp = MODEL.generate_content(prompt_html)
-        # API иногда отдаёт неочевидные структуры; берём .text
-        answer = (getattr(resp, "text", None) or "").strip()
-        if not answer:
-            # в редких случаях текст в candidates
-            try:
-                cands = getattr(resp, "candidates", []) or []
-                for c in cands:
-                    parts = c.get("content", {}).get("parts") or []
-                    for p in parts:
-                        if "text" in p and p["text"].strip():
-                            answer = p["text"].strip()
-                            break
-                    if answer:
-                        break
-            except Exception:
-                pass
-
-        if not answer:
-            answer = "<p>Извините, не удалось сформировать ответ. Попробуйте переформулировать вопрос.</p>"
-
-        # Мини-гигиена: если модель вдруг прислала markdown, не трогаем (фронт покажет как есть),
-        # но просили HTML — в большинстве случаев модель соблюдает.
-        return jsonify({"html": answer, "used_articles": used_articles})
-
+        hits = search_laws(question, top_k=3)
+        html_answer = build_html_answer(question, hits)
+        return jsonify({
+            "ok": True,
+            "answer_html": html_answer,
+            "matches": [
+                {
+                    "title": a.get("title"),
+                    "source": a.get("source"),
+                    "score": s
+                } for a, s in hits
+            ]
+        })
     except Exception as e:
-        msg = str(e)
-        log.exception("❌ Ошибка генерации: %s", msg)
-        if "503" in msg or "overloaded" in msg.lower():
-            return jsonify({"error": "503 The model is overloaded. Please try again later."}), 503
-        return jsonify({"error": "Internal error while generating the answer."}), 500
+        log.exception("❌ Ошибка при обработке вопроса")
+        return json_error(500, "INTERNAL_ERROR", str(e))
 
+# «корень» можно оставить 404 — Railway иногда стучится GET /
+@app.route("/", methods=["GET"])
+def root_404():
+    return make_response("Not Found", 404)
 
-# --------------------------- Точка входа ---------------------------
-
+# ------------------------- ЗАПУСК -------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)

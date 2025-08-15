@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('kazLegalBotSessionId', sessionId);
     }
 
-    const API_BASE_URL = 'https://tegailawyer-production.up.railway.app/api';
+    const API_BASE = '/api'; // Netlify proxy -> бэкенд
 
     // Auto-resize textarea
     function autoResize(textarea) {
@@ -71,54 +71,76 @@ document.addEventListener('DOMContentLoaded', () => {
         // Show loading
         showLoading();
 
+        const url = `${API_BASE}/ask`;
+        const payload = { question: messageText.trim() };
+
+        // Жирный дебаг запроса
+        console.debug('[sendMessage] POST', url, {
+            headers: { 'Content-Type': 'application/json' },
+            body: payload
+        });
+
+        let res;
         try {
-            const response = await fetch(`${API_BASE_URL}/ask`, {
+            res = await fetch(url, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ 
-                    message: messageText, 
-                    session_id: sessionId 
-                }),
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(payload)
             });
-
+        } catch (netErr) {
+            console.error('[sendMessage] Network error:', netErr);
             hideLoading();
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let botResponse = '';
-            let botMessageDiv = null;
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                const chunk = decoder.decode(value, { stream: true });
-                botResponse += chunk;
-                
-                // Create or update bot message
-                if (!botMessageDiv) {
-                    botMessageDiv = addMessage('bot', botResponse);
-                } else {
-                    updateBotMessage(botMessageDiv, botResponse);
-                }
-            }
-
-        } catch (error) {
-            hideLoading();
-            console.error('Error sending message:', error);
             addMessage('bot', `
                 <div style="color: #e74c3c; padding: 1rem; background: #fdf2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
-                    <strong>Произошла ошибка</strong><br>
-                    Извините, не удалось получить ответ. Пожалуйста, попробуйте еще раз или проверьте подключение к интернету.
+                    <strong>Ошибка сети</strong><br>
+                    Сеть недоступна или бэкенд не отвечает.
                 </div>
             `);
+            return;
         }
+
+        const rawText = await res.text();
+        console.debug('[sendMessage] Response status:', res.status);
+        console.debug('[sendMessage] Raw response body:', rawText);
+
+        // Пытаемся распарсить JSON (даже если статус не 2xx)
+        let data = null;
+        try {
+            data = JSON.parse(rawText);
+        } catch {
+            // оставим rawText в логе
+        }
+
+        if (!res.ok) {
+            const msg = data?.error?.message || `HTTP ${res.status}`;
+            const code = data?.error?.code || 'UNKNOWN';
+            console.error('[sendMessage] Backend error:', { code, msg, debug: data?.debug });
+            hideLoading();
+            addMessage('bot', `
+                <div style="color: #e74c3c; padding: 1rem; background: #fdf2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
+                    <strong>Ошибка сервера</strong><br>
+                    ${code}. ${msg}
+                </div>
+            `);
+            return;
+        }
+
+        if (!data?.ok) {
+            console.error('[sendMessage] Logical error:', data);
+            hideLoading();
+            addMessage('bot', `
+                <div style="color: #e74c3c; padding: 1rem; background: #fdf2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
+                    <strong>Ошибка</strong><br>
+                    ${data?.error?.message || 'Не удалось получить ответ.'}
+                </div>
+            `);
+            return;
+        }
+
+        hideLoading();
+        // У вас рендер HTML
+        addMessage('bot', data.answer_html);
     }
 
     // Global function for question tags
