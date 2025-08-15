@@ -174,4 +174,38 @@ body{
 .chat-messages::-webkit-scrollbar-thumb{background:linear-gradient(135deg,var(--bg1) 0%,var(--bg2) 100%);border-radius:3px}
 .chat-messages::-webkit-scrollbar-thumb:hover{filter:brightness(.95)}
 
+/* === Compact readable answer on mobile === */
+.message.bot {
+  line-height: 1.5;
+}
+.message.bot h3 { margin: 12px 0 8px; }
+.message.bot p { margin: 8px 0; }
+.message.bot ul { margin: 8px 0 8px 20px; padding: 0; }
+.message.bot li { margin: 6px 0; }
+.message.bot li p { margin: 0; }     /* убираем лишний отступ, если LLM вложил <p> внутрь <li> */
+.message.bot pre.code-block {
+  white-space: pre-wrap;      /* переносы внутри шаблонов */
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.35;
+  padding: 12px;
+}
+
+/* скрыть пустые элементы, которые иногда генерит LLM */
+.message.bot p:empty,
+.message.bot h3:empty,
+.message.bot li:empty { display: none; }
+
+/* ширина на телефонах – во всю, без «лишних полей» по бокам */
+@media (max-width: 640px) {
+  .app-container { padding: 8px; }
+  .chat-container { width: 100%; max-width: none; margin: 0; padding: 0 8px; }
+  .chat-messages { padding: 6px 0 96px; }
+  .message { margin: 10px 0; border-radius: 14px; }
+  .message.bot { padding: 14px; }
+  .message.user { padding: 10px 12px; }
+  .chat-input-container { padding: 8px; }
+  .chat-input textarea { font-size: 16px; }
+}
+
 
