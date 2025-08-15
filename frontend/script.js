@@ -10,7 +10,73 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('kazLegalBotSessionId', sessionId);
     }
 
-    const API_BASE = '/api'; // Netlify proxy -> бэкенд
+    /* =========   API BASE   ========= */
+    /* В проде уходим напрямую напрямую на Railway, чтобы не ловить 504 от Netlify-прокси. */
+    const PROD_BACKEND = "https://tegailawyer-production.up.railway.app/api";
+    const API_BASE = (location.hostname.endsWith("netlify.app") || location.hostname.endsWith("vercel.app"))
+      ? PROD_BACKEND
+      : "/api";
+
+    /* =========   FETCH с максимальным дебагом   ========= */
+    async function apiFetch(path, options = {}, retries = 1) {
+      const url = `${API_BASE}${path}`;
+      const opts = {
+        method: "GET",
+        credentials: "include",
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+      };
+
+      // превью тела
+      let bodyPreview = "";
+      try {
+        if (opts.body && typeof opts.body !== "string") {
+          bodyPreview = JSON.stringify(opts.body).slice(0, 500);
+          opts.body = JSON.stringify(opts.body);
+        } else if (typeof opts.body === "string") {
+          bodyPreview = opts.body.slice(0, 500);
+        }
+      } catch (_) {}
+
+      console.debug("→ fetch", url, { ...opts, body: bodyPreview });
+
+      for (let i = 0; i <= retries; i++) {
+        try {
+          const res = await fetch(url, opts);
+          const ct = res.headers.get("content-type") || "";
+          const text = await res.clone().text();
+          console.debug("←", res.status, "CT:", ct, "BodyPreview:", text.slice(0, 400));
+
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
+          }
+
+          // Вернем Response-подобную сущность c уже считанным текстом
+          return {
+            ok: true,
+            status: res.status,
+            headers: res.headers,
+            text: async () => text,
+            json: async () => (ct.includes("application/json") ? JSON.parse(text || "{}") : { raw: text }),
+          };
+        } catch (e) {
+          console.warn(`Retry ${i + 1}/${retries} for ${url}:`, e.message);
+          if (i < retries) {
+            await new Promise(r => setTimeout(r, 800 * (i + 1)));
+          } else {
+            throw e;
+          }
+        }
+      }
+    }
+
+    /* Вызовы:
+       await apiFetch("/ask", { method: "POST", body: { question: "..." } });
+       await apiFetch("/health");
+    */
 
     // Auto-resize textarea
     function autoResize(textarea) {
@@ -71,76 +137,38 @@ document.addEventListener('DOMContentLoaded', () => {
         // Show loading
         showLoading();
 
-        const url = `${API_BASE}/ask`;
-        const payload = { question: messageText.trim() };
-
-        // Жирный дебаг запроса
-        console.debug('[sendMessage] POST', url, {
-            headers: { 'Content-Type': 'application/json' },
-            body: payload
-        });
-
-        let res;
         try {
-            res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify(payload)
+            const res = await apiFetch("/ask", { 
+                method: "POST", 
+                body: { question: messageText.trim() } 
             });
-        } catch (netErr) {
-            console.error('[sendMessage] Network error:', netErr);
-            hideLoading();
-            addMessage('bot', `
-                <div style="color: #e74c3c; padding: 1rem; background: #fdf2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
-                    <strong>Ошибка сети</strong><br>
-                    Сеть недоступна или бэкенд не отвечает.
-                </div>
-            `);
-            return;
-        }
+            
+            const data = await res.json();
+            
+            if (!data?.ok) {
+                console.error('[sendMessage] Logical error:', data);
+                addMessage('bot', `
+                    <div style="color: #e74c3c; padding: 1rem; background: #fdf2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
+                        <strong>Ошибка</strong><br>
+                        ${data?.error?.message || 'Не удалось получить ответ.'}
+                    </div>
+                `);
+                return;
+            }
 
-        const rawText = await res.text();
-        console.debug('[sendMessage] Response status:', res.status);
-        console.debug('[sendMessage] Raw response body:', rawText);
-
-        // Пытаемся распарсить JSON (даже если статус не 2xx)
-        let data = null;
-        try {
-            data = JSON.parse(rawText);
-        } catch {
-            // оставим rawText в логе
-        }
-
-        if (!res.ok) {
-            const msg = data?.error?.message || `HTTP ${res.status}`;
-            const code = data?.error?.code || 'UNKNOWN';
-            console.error('[sendMessage] Backend error:', { code, msg, debug: data?.debug });
-            hideLoading();
-            addMessage('bot', `
-                <div style="color: #e74c3c; padding: 1rem; background: #fdf2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
-                    <strong>Ошибка сервера</strong><br>
-                    ${code}. ${msg}
-                </div>
-            `);
-            return;
-        }
-
-        if (!data?.ok) {
-            console.error('[sendMessage] Logical error:', data);
-            hideLoading();
+            // У вас рендер HTML
+            addMessage('bot', data.answer_html);
+        } catch (error) {
+            console.error('[sendMessage] Error:', error);
             addMessage('bot', `
                 <div style="color: #e74c3c; padding: 1rem; background: #fdf2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
                     <strong>Ошибка</strong><br>
-                    ${data?.error?.message || 'Не удалось получить ответ.'}
+                    ${error.message || 'Не удалось получить ответ.'}
                 </div>
             `);
-            return;
+        } finally {
+            hideLoading();
         }
-
-        hideLoading();
-        // У вас рендер HTML
-        addMessage('bot', data.answer_html);
     }
 
     // Global function for question tags

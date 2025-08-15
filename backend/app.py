@@ -35,6 +35,19 @@ else:
     CORS(app, supports_credentials=True)
     log.warning("⚠️ FRONTEND_ORIGIN не задан — CORS открыт для всех (dev only).")
 
+# Универсальные CORS + лог ответа
+@app.after_request
+def _after(resp):
+    origin = os.getenv("FRONTEND_ORIGIN", "*")
+    resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Credentials"] = "true"
+    logging.debug("⬅️  %s %s -> %s CT:%s",
+                  request.method, request.path, resp.status_code,
+                  resp.headers.get("Content-Type"))
+    return resp
+
 # ========== БАЗА ЗАКОНОВ ==========
 LAWS_PATH = os.getenv("LAWS_PATH", "laws/kazakh_laws.json")
 try:
@@ -196,6 +209,13 @@ def _json_error(status: int, code: str, message: str, debug: Dict = None):
 def api_health():
     return jsonify({"ok": True, "laws_count": len(LAWS), "llm": bool(GEMINI_API_KEY), "message": "alive"})
 
+@api.route("/echo", methods=["POST", "OPTIONS"])
+def api_echo():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    payload, dbg = _get_json_payload()
+    return jsonify({"ok": True, "received": payload, "debug": dbg})
+
 @api.route("/ask", methods=["POST", "OPTIONS"])
 def api_ask():
     if request.method == "OPTIONS":
@@ -231,11 +251,9 @@ def api_ask():
         log.exception("❌ Ошибка при обработке вопроса")
         return _json_error(500, "INTERNAL_ERROR", str(e))
 
-# --- ALIAS: принимать также /ask без префикса, на случай кривого прокси ---
+# Алиас-роут без префикса (если прокси опять «съест» /api)
 @app.route("/ask", methods=["POST", "OPTIONS"])
 def ask_alias():
-    # Просто используем ту же логику, что и /api/ask
-    # Импортируем прямо тут, чтобы избежать циклических импортов:
     return api_ask()
 
 # Корневой
