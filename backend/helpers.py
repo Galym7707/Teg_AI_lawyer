@@ -1,195 +1,246 @@
+# -*- coding: utf-8 -*-
+"""
+Вспомогательные функции: загрузка законов, индекс, поиск, подготовка HTML-контекста.
+Не требует внешних библиотек, работает быстро на 20–200 документах.
+"""
+
+from __future__ import annotations
 import json
-import math
 import os
 import re
-from typing import Dict, List, Tuple, Iterable, Set
+import html
+from typing import List, Dict, Tuple
 
-# -----------------------------
-# Текстовые утилиты
-# -----------------------------
 
-_RU_SPLIT = re.compile(r"[^\w]+", re.UNICODE)
-_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+# --------------------------- Токенизация и нормализация ---------------------------
 
-# Очень короткий список стоп-слов (минимум для рабочих кейсов)
-_STOP = {
-    "и", "в", "во", "на", "о", "об", "от", "по", "для", "с", "со", "к",
-    "из", "за", "как", "что", "это", "или", "а", "но", "же", "бы", "ли",
-    "при", "над", "под", "до", "после", "без", "про", "у", "мы", "вы",
-    "они", "он", "она", "оно", "их", "его", "ее", "мой", "твой", "ваш",
-    "наш", "тот", "эта", "эти", "то", "те", "все", "не", "нет", "да",
+_RUS_STOP = {
+    # мини-набор стоп-слов (можно расширять по мере надобности)
+    "и", "в", "во", "на", "но", "да", "что", "как", "к", "ко", "от", "по", "за", "для",
+    "с", "со", "у", "о", "об", "из", "не", "ни", "ли", "же", "бы", "же", "то", "это",
+    "а", "или", "при", "над", "без", "под", "до", "после", "между", "при", "про", "надо",
 }
 
-# Синонимы/родственные термины — короткий, но полезный набор
 _SYNONYMS = {
-    "увольнение": {"уволиться", "расторжение", "прекращение", "сокращение", "расторжение трудового договора", "увольнение"},
-    "зарплата": {"заработная плата", "оплата труда", "оклад", "премия", "долг по зарплате", "задолженность"},
-    "отпуск": {"ежегодный отпуск", "трудовой отпуск", "отпускные", "больничный"},
-    "трудовой договор": {"контракт", "договор", "соглашение", "прием на работу"},
-    "работодатель": {"компания", "организация", "наниматель"},
-    "работник": {"сотрудник", "служащий"},
-    "алимент": {"алименты", "содержание"},
-    "развод": {"расторжение брака"},
-    "недвижимость": {"имущество", "собственность"},
-    "штраф": {"пени", "взыскание", "санкция"},
+    # очень компактный синонимический словарик для русских форм
+    "уволиться": {"уволиться", "увольнение", "уволен", "уволить", "расторжение", "прекращение"},
+    "договор": {"договор", "контракт", "соглашение"},
+    "работа": {"работа", "служба", "труд", "работодатель", "служащий", "работник"},
+    "жалоба": {"жалоба", "заявление", "обращение", "претензия"},
+    "штраф": {"штраф", "ответственность", "санкция", "наказание"},
+    "суд": {"суд", "судебный", "исковое", "иск"},
 }
 
-def tokenize(text: str) -> List[str]:
-    if not text:
-        return []
-    toks = [t.lower() for t in _RU_SPLIT.split(text) if t]
-    return [t for t in toks if t not in _STOP and len(t) > 1]
+_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{2,}", re.UNICODE)
 
-def expand_keywords(words: Iterable[str]) -> Set[str]:
-    out = set()
-    for w in words:
-        out.add(w)
-        for head, syns in _SYNONYMS.items():
-            if w == head or w in syns:
-                out.add(head)
-                out |= syns
-    return out
-
-def sentences(text: str) -> List[str]:
-    text = text.strip()
-    if not text:
-        return []
-    # делим по предложениям
-    return _SENT_SPLIT.split(text)
-
-# -----------------------------
-# Загрузка законов и индекс
-# -----------------------------
-
-class LawArticle:
-    __slots__ = ("id", "title", "text", "source", "tokens", "ttf")
-    def __init__(self, idx: int, raw: Dict):
-        self.id = idx
-        self.title = raw.get("title") or raw.get("name") or "Без названия"
-        body = raw.get("text") or raw.get("content") or ""
-        self.text = body
-        self.source = raw.get("source") or raw.get("link") or ""
-        # токены для скоринга
-        self.tokens = tokenize(f"{self.title} {self.text}")
-        self.ttf = {}  # term -> term frequency в статье
-        for t in self.tokens:
-            self.ttf[t] = self.ttf.get(t, 0) + 1
-
-def load_laws(path: str) -> List[LawArticle]:
-    if not os.path.exists(path):
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    laws = [LawArticle(i, rec) for i, rec in enumerate(raw)]
-    return laws
-
-class LawIndex:
-    def __init__(self, laws: List[LawArticle]):
-        self.laws = laws
-        # обратный индекс: term -> [doc_id, ...]
-        self.inv: Dict[str, List[int]] = {}
-        for art in laws:
-            for t in art.ttf.keys():
-                self.inv.setdefault(t, []).append(art.id)
-        # idf
-        N = len(laws) or 1
-        self.idf: Dict[str, float] = {}
-        for term, posting in self.inv.items():
-            df = len(set(posting))
-            # сглаженный idf
-            self.idf[term] = math.log(1 + (N - df + 0.5) / (df + 0.5))
-
-    def bm25_score(self, query_terms: List[str], art: LawArticle, k1=1.5, b=0.75) -> float:
-        # упрощённый BM25
-        if not art.tokens:
-            return 0.0
-        L = len(art.tokens)
-        avgL = max(1.0, sum(len(a.tokens) for a in self.laws) / (len(self.laws) or 1))
-        score = 0.0
-        for q in query_terms:
-            tf = art.ttf.get(q, 0)
-            if not tf:
-                continue
-            idf = self.idf.get(q, 0.0)
-            denom = tf + k1 * (1 - b + b * L / avgL)
-            score += idf * (tf * (k1 + 1)) / denom
-        # лёгкий бонус за совпадение в заголовке
-        title_bonus = sum(1 for q in query_terms if q in tokenize(art.title))
-        if title_bonus:
-            score *= (1.0 + 0.25 * title_bonus)
-        return score
-
-    def search(self, query: str, top_k: int = 6) -> List[Tuple[LawArticle, float]]:
-        base = tokenize(query)
-        if not base:
-            return []
-        expanded = expand_keywords(base)
-        q_terms = list(expanded)
-        scored: List[Tuple[LawArticle, float]] = []
-        for art in self.laws:
-            s = self.bm25_score(q_terms, art)
-            # бонус за фразовые совпадения (грубая эвристика)
-            low = (art.title + " " + art.text).lower()
-            for kw in base:
-                if f" {kw} " in f" {low} ":
-                    s += 0.2
-            if s > 0:
-                scored.append((art, s))
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[:top_k]
-
-# -----------------------------
-# Сниппеты и HTML-контекст
-# -----------------------------
-
-def make_snippet(text: str, keyset: Set[str], window_chars: int = 220) -> str:
-    if not text:
-        return ""
-    low = text.lower()
-    hits: List[Tuple[int, int]] = []
-    for kw in keyset:
-        for m in re.finditer(r"\b" + re.escape(kw) + r"\b", low):
-            s = max(0, m.start() - window_chars)
-            e = min(len(text), m.end() + window_chars)
-            hits.append((s, e))
-    if not hits:
-        return text[:2 * window_chars].strip()
-    # слить пересечения
-    hits.sort()
-    merged = [hits[0]]
-    for s, e in hits[1:]:
-        ps, pe = merged[-1]
-        if s <= pe + 30:
-            merged[-1] = (ps, max(pe, e))
-        else:
-            merged.append((s, e))
-    parts = []
-    for s, e in merged[:3]:
-        frag = text[s:e].strip()
-        if s > 0:
-            frag = "…" + frag
-        if e < len(text):
-            frag = frag + "…"
-        parts.append(frag)
-    return " ".join(parts)
-
-def laws_to_html_context(results: List[Tuple[LawArticle, float]], query: str) -> str:
-    if not results:
-        return ""
-    keys = expand_keywords(tokenize(query))
-    lines = []
-    lines.append('<h3>Релевантные законы</h3>')
-    lines.append('<ul>')
-    for art, _score in results:
-        src = f' (<a href="{art.source}" target="_blank" rel="noopener">источник</a>)' if art.source else ""
-        snip = make_snippet(art.text, keys)
-        lines.append(f'<li><strong>{escape_html(art.title)}</strong>{src}<br>{escape_html(snip)}</li>')
-    lines.append('</ul>')
-    return "\n".join(lines)
 
 def escape_html(s: str) -> str:
-    return (
-        s.replace("&", "&amp;")
-         .replace("<", "&lt;")
-         .replace(">", "&gt;")
-    )
+    return html.escape(s, quote=True)
+
+
+def _normalize(text: str) -> str:
+    return " ".join(_TOKEN_RE.findall(text.lower()))
+
+
+def _tokens(text: str) -> List[str]:
+    return [t for t in _TOKEN_RE.findall(text.lower()) if t not in _RUS_STOP]
+
+
+def _expand_with_synonyms(tokens: List[str]) -> List[str]:
+    out = list(tokens)
+    for t in tokens:
+        for root, syns in _SYNONYMS.items():
+            if t in syns:
+                out.extend(list(syns))
+    return out
+
+
+# --------------------------- Загрузка законов ---------------------------
+
+def load_laws(laws_path: str) -> List[Dict]:
+    """
+    Ожидается JSON-массив объектов вида:
+      { "title": "...", "text": "...", "source": "https://..." }
+    """
+    if not os.path.exists(laws_path):
+        raise FileNotFoundError(f"LAWS_PATH not found: {laws_path}")
+
+    with open(laws_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    docs = []
+    for i, item in enumerate(data):
+        title = str(item.get("title", "")).strip()
+        text = str(item.get("text", "")).strip()
+        source = str(item.get("source", "")).strip()
+
+        if not text:
+            continue
+
+        docs.append({
+            "id": i,
+            "title": title or f"Без названия #{i+1}",
+            "text": text,
+            "source": source,
+        })
+    return docs
+
+
+# --------------------------- Индекс и скоринг ---------------------------
+
+class LawIndex:
+    def __init__(self, laws: List[Dict]):
+        self.docs = laws
+        self.norm = []     # нормализованный текст
+        self.tokens = []   # токены (со стоп-словами выкинутыми)
+        self.inv = {}      # инвертированный индекс: токен -> set(doc_ids)
+
+        for doc in self.docs:
+            nrm = _normalize(doc["text"])
+            toks = _tokens(doc["text"])
+            self.norm.append(nrm)
+            self.tokens.append(toks)
+            for t in set(toks):
+                self.inv.setdefault(t, set()).add(doc["id"])
+
+    def _candidate_docs(self, query_tokens: List[str]) -> List[int]:
+        """
+        Находит кандидатов по пересечению токенов и их синонимов.
+        """
+        expanded = _expand_with_synonyms(query_tokens)
+        cand_sets = []
+        for t in set(expanded):
+            cand_sets.append(self.inv.get(t, set()))
+        if not cand_sets:
+            return []
+        # объединяем (union), а не пересечение, чтобы не терять кандидатов
+        cands = set()
+        for s in cand_sets:
+            cands |= s
+        return list(cands)
+
+    def _score(self, doc_id: int, query: str, q_tokens: List[str]) -> float:
+        """
+        Грубая, но практичная метрика релевантности:
+        - совпадения по токенам (+1 за уникальный токен запроса, встречающийся в документе)
+        - бонус за фразы запроса (подстроки длиной 2–4 токена)
+        - лёгкий бонус за упоминание ключевых «юридических слов» (увольнение/договор/и т.д.)
+        """
+        doc_toks = set(self.tokens[doc_id])
+        base = 0.0
+
+        uniq_q = set(_expand_with_synonyms(q_tokens))
+        for t in uniq_q:
+            if t in doc_toks:
+                base += 1.0
+
+        # N-граммы (2..4) — если фраза встречается как подстрока
+        doc_norm = self.norm[doc_id]
+        qtoks = q_tokens[:]
+        for n in (4, 3, 2):
+            if len(qtoks) >= n:
+                for i in range(0, len(qtoks) - n + 1):
+                    phrase = " ".join(qtoks[i:i+n])
+                    if phrase and phrase in doc_norm:
+                        base += 1.5 * (n - 1)  # длиннее фраза — больше вес
+
+        # бонус за юридические триггеры
+        for root in _SYNONYMS:
+            if any(t in doc_toks for t in _SYNONYMS[root]):
+                base += 0.2
+
+        return base
+
+    def search(self, query: str, top_k: int = 5, min_score: float = 1.0) -> List[Tuple[Dict, float, str]]:
+        """
+        Возвращает список кортежей (doc, score, snippet_html)
+        """
+        q = query.strip()
+        if not q:
+            return []
+
+        q_tokens = _tokens(q)
+        cand_ids = self._candidate_docs(q_tokens)
+        if not cand_ids:
+            return []
+
+        scored: List[Tuple[int, float]] = []
+        for doc_id in cand_ids:
+            sc = self._score(doc_id, q, q_tokens)
+            if sc > 0:
+                scored.append((doc_id, sc))
+
+        if not scored:
+            return []
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        out = []
+        for doc_id, sc in scored[:top_k]:
+            doc = self.docs[doc_id]
+            snippet = make_snippet(doc["text"], q, q_tokens)
+            out.append((doc, sc, snippet))
+        # фильтр нижнего порога — чтобы не лепить нерелевант
+        return [(d, s, sn) for (d, s, sn) in out if s >= min_score]
+
+
+def make_snippet(text: str, query: str, q_tokens: List[str], max_len: int = 600) -> str:
+    """
+    Делает HTML-сниппет с подсветкой совпадений.
+    """
+    safe = escape_html(text)
+    # подсветка ключевых слов
+    hl_tokens = sorted(set(_expand_with_synonyms(q_tokens)), key=len, reverse=True)
+    for t in hl_tokens:
+        if len(t) < 3:
+            continue
+        safe = re.sub(rf"(?i)\b({re.escape(t)})\b", r"<mark>\1</mark>", safe)
+
+    if len(safe) <= max_len:
+        return safe
+
+    # пытаемся найти фрагмент вокруг первого ключа
+    first = None
+    for t in hl_tokens:
+        m = re.search(rf"(?i)\b{re.escape(t)}\b", safe)
+        if m:
+            first = m.start()
+            break
+    if first is None:
+        return safe[:max_len] + "..."
+
+    left = max(0, first - max_len // 2)
+    right = min(len(safe), left + max_len)
+    frag = safe[left:right]
+    if left > 0:
+        frag = "..." + frag
+    if right < len(safe):
+        frag = frag + "..."
+    return frag
+
+
+# --------------------------- Подготовка HTML-контекста ---------------------------
+
+def laws_to_html_context(results: List[Tuple[Dict, float, str]]) -> Tuple[str, List[Dict]]:
+    """
+    Из результатов поиска делает HTML-контекст для подсказки модели
+    и компактный список использованных источников для фронта.
+    """
+    if not results:
+        return "", []
+
+    sections = []
+    used = []
+    for doc, score, snippet in results:
+        title = escape_html(doc["title"])
+        source = escape_html(doc["source"])
+        sections.append(
+            f"<section>"
+            f"<h3>{title}</h3>"
+            f"<p><em>Источник:</em> <a href=\"{source}\" target=\"_blank\" rel=\"noopener\">{source}</a></p>"
+            f"<p>{snippet}</p>"
+            f"</section>"
+        )
+        used.append({"title": doc["title"], "source": doc["source"], "score": round(score, 2)})
+
+    html_ctx = "\n".join(sections)
+    return html_ctx, used
