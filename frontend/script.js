@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('kazLegalBotSessionId', sessionId);
     }
 
-    const API_BASE_URL = '/api';
+    const API_BASE_URL = 'https://tegailawyer-production.up.railway.app/api';
 
     // Auto-resize textarea
     function autoResize(textarea) {
@@ -72,7 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
         showLoading();
 
         try {
-            const response = await fetch(`${API_BASE_URL}/chat`, {
+            const response = await fetch(`${API_BASE_URL}/ask`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
