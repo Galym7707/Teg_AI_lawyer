@@ -12,10 +12,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     /* =========   API BASE   ========= */
     /* В проде уходим напрямую напрямую на Railway, чтобы не ловить 504 от Netlify-прокси. */
-    const PROD_BACKEND = "https://tegailawyer-production.up.railway.app/api";
-    const API_BASE = (location.hostname.endsWith("netlify.app") || location.hostname.endsWith("vercel.app"))
-      ? PROD_BACKEND
-      : "/api";
+    const API_BASE = (window.env && window.env.BACKEND_URL)
+        ? window.env.BACKEND_URL + '/api'
+        : 'https://tegailawyer-production.up.railway.app/api';
 
     /* =========   FETCH с максимальным дебагом   ========= */
     async function apiFetch(path, options = {}, retries = 1) {

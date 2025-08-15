@@ -1,5 +1,12 @@
 [build]
-publish = "frontend"
+  command = ""
+  publish = "frontend"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Если хочешь зашить адрес бэкенда тут (можно оставить только в UI)
+# BACKEND_URL = "https://tegailawyer-production.up.railway.app"
 
 [[redirects]]
 from = "/api/*"
