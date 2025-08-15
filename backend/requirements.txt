@@ -6,5 +6,4 @@ PyPDF2
 python-docx
 lxml
 Pillow
-
-
+bleach
