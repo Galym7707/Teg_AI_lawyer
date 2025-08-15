@@ -15,6 +15,7 @@ from helpers import (
     build_html_answer,
     call_llm,
     web_enrich_official_sources,
+    sanitize_html,  # <-- добавили
 )
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -85,7 +86,7 @@ def _handle_ask():
     hits, intent = search_laws(question, DOCS, INDEX, top_k=5)
     log.info("🔎 Совпадений: %d | intent: %s", len(hits), intent)
 
-    # Опционально обогащаем официальными источниками (если заданы ключи)
+    # Веб-обогащение (если заданы ключи)
     web_sources: List[Dict] = []
     try:
         web_sources = web_enrich_official_sources(question, limit=3)
@@ -94,7 +95,7 @@ def _handle_ask():
     except Exception as e:
         log.warning("web_enrich_official_sources failed: %s", e)
 
-    # Пытаемся собрать ответ через LLM (с таймаутом)
+    # LLM с таймаутом
     llm_html = ""
     try:
         fut = _executor.submit(call_llm, question, hits, intent, web_sources)
@@ -104,7 +105,9 @@ def _handle_ask():
     except Exception as e:
         log.exception("LLM fail: %s", e)
 
-    answer_html = llm_html.strip() or build_html_answer(question, hits, intent, web_sources)
+    # Финальная сборка + санитайзер
+    answer_html = (llm_html.strip() or build_html_answer(question, hits, intent, web_sources)).strip()
+    answer_html = sanitize_html(answer_html)  # <-- главное исправление
     took = int((time.time() - started) * 1000)
     log.info("✅ Ответ готов (%d симв) за %d мс", len(answer_html), took)
 
