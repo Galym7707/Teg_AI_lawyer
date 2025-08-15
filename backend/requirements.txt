@@ -1,10 +1,9 @@
 Flask
 google-generativeai
-pymongo
 python-dotenv
 PyPDF2
 python-docx
-lxml
 Pillow
 bleach
-bs4
+flask-cors
+gunicorn
