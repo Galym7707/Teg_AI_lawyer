@@ -178,15 +178,34 @@ body{
 .message.bot {
   line-height: 1.5;
 }
-.message.bot h3 { margin: 12px 0 8px; }
-.message.bot p { margin: 8px 0; }
-.message.bot ul { margin: 8px 0 8px 20px; padding: 0; }
-.message.bot li { margin: 6px 0; }
-.message.bot li p { margin: 0; }     /* убираем лишний отступ, если LLM вложил <p> внутрь <li> */
+.message.bot h3 { 
+  margin: 14px 0 8px; 
+  font-size: 1.05rem; 
+  color: var(--ink-d);
+  font-weight: 700;
+}
+.message.bot p { 
+  margin: 0 0 10px; 
+  line-height: 1.45; 
+}
+.message.bot ul { 
+  margin: 8px 0 8px 20px; 
+  padding: 0; 
+}
+.message.bot li { 
+  margin: 6px 0; 
+}
+.message.bot li p { 
+  margin: 0; 
+}     /* убираем лишний отступ, если LLM вложил <p> внутрь <li> */
+.message.bot .muted { 
+  color: #6b7280; 
+  font-size: .95em; 
+}
 .message.bot pre.code-block {
   white-space: pre-wrap;      /* переносы внутри шаблонов */
   word-break: break-word;
-  font-size: 14px;
+  font-size: .95em;
   line-height: 1.35;
   padding: 12px;
 }
