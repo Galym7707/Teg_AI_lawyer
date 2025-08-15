@@ -4,9 +4,6 @@
       "maxDuration": 30
     }
   },
-  "env": {
-    "BACKEND_URL": "@backend_url"
-  },
   "rewrites": [
     {
       "source": "/api/(.*)",
