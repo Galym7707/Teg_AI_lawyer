@@ -1,72 +1,117 @@
+# -*- coding: utf-8 -*-
+"""
+Вспомогательные функции для Kaz Legal Bot:
+- нормализация текста
+- токенизация
+- расширение запроса синонимами
+- построение инвертированного индекса
+"""
+
 import re
+from typing import List, Dict, Any, Set
 
-def expand_keywords(query: str, synonyms: dict) -> list[str]:
-    """Расширяет ключевые слова запроса с использованием словаря синонимов.
+# ----------------------- Нормализация / токены -------------
+_norm_map = str.maketrans({"Ё": "Е", "ё": "е"})
 
-    Args:
-        query: Исходный запрос пользователя.
-        synonyms: Словарь синонимов, где ключ - основное слово, значение - список синонимов.
+def normalize_text(s: str) -> str:
+    s = (s or "").translate(_norm_map)
+    s = s.lower()
+    # убираем лишнее, оставляем буквы/цифры и пробел
+    s = re.sub(r"[^\w\s]", " ", s, flags=re.U)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
-    Returns:
-        Список расширенных ключевых слов.
+_token_re = re.compile(r"[0-9a-zA-Zа-яА-ЯёЁ]+", re.U)
+
+def tokenize(s: str) -> List[str]:
+    s = normalize_text(s)
+    return _token_re.findall(s)
+
+# ----------------------- Синонимы --------------------------
+# Минимальный, но полезный словарь. При желании дополняйте.
+LEGAL_SYNONYMS: Dict[str, List[str]] = {
+    # трудовые отношения / увольнение
+    "увольнение": [
+        "уволиться", "уволиться с работы", "уволицца", "расторжение трудового договора",
+        "прекращение трудового договора", "уволен", "увольнять", "увольнении",
+        "dismissal", "termination of employment",
+    ],
+    "заявление": ["заявление об увольнении", "письменное заявление", "уведомление"],
+    "отработка": ["без отработки", "предупреждение за 1 месяц", "срок предупреждения"],
+    "компенсация": ["выплаты", "выходное пособие", "компенсационные выплаты", "расчет"],
+    "зарплата": ["заработная плата", "выплата зарплаты", "удержания"],
+    "отпуск": ["компенсация за отпуск", "неиспользованный отпуск"],
+    "инспекция": ["трудовая инспекция", "госинспекция труда", "жалоба"],
+    # общие
+    "суд": ["исковое заявление", "судебный порядок", "судебное разбирательство"],
+    "срок": ["сроки", "дедлайн", "период"],
+}
+
+def expand_keywords(query: str) -> Set[str]:
     """
-    expanded = set()
-    words = query.lower().split()
-    for word in words:
-        found = False
-        for main_word, syn_list in synonyms.items():
-            if word == main_word.lower() or word in [s.lower() for s in syn_list]:
-                expanded.add(main_word)
-                for s in syn_list:
-                    expanded.add(s)
-                found = True
-                break
-        if not found:
-            expanded.add(word)
-    return list(expanded)
-
-def build_snippet(text: str, keywords: list[str], max_length: int = 500) -> str:
-    """Извлекает релевантный сниппет из текста на основе ключевых слов.
-
-    Args:
-        text: Полный текст статьи закона.
-        keywords: Список ключевых слов для поиска.
-        max_length: Максимальная длина сниппета.
-
-    Returns:
-        Сниппет текста, содержащий ключевые слова.
+    Берём токены запроса + синонимы + базовые формы (в лоб).
     """
-    if not keywords:
-        return text[:max_length] + "..." if len(text) > max_length else text
+    base = set(tokenize(query))
+    expanded: Set[str] = set(base)
 
-    # Создаем регулярное выражение для поиска любого из ключевых слов
-    # Использование re.escape для обработки спецсимволов в ключевых словах
-    pattern = r"\b(?:" + "|".join(re.escape(k) for k in keywords) + r")\b"
-    matches = list(re.finditer(pattern, text, re.IGNORECASE))
+    # Добавляем синонимы для каждого слова
+    for token in list(base):
+        # прямое совпадение
+        if token in LEGAL_SYNONYMS:
+            expanded.update(tokenize(" ".join(LEGAL_SYNONYMS[token])))
 
-    if not matches:
-        return text[:max_length] + "..." if len(text) > max_length else text
+        # обратное сопоставление (если token попал как синоним другого ключа)
+        for head, syns in LEGAL_SYNONYMS.items():
+            for syn in syns:
+                if token == normalize_text(syn):
+                    expanded.add(head)
 
-    best_snippet = ""
-    for match in matches:
-        start_index = max(0, match.start() - max_length // 2)
-        end_index = min(len(text), match.end() + max_length // 2)
-        snippet = text[start_index:end_index]
+    # Ещё раз прогон по токенайзеру — на случай составных выражений
+    out: Set[str] = set()
+    for item in expanded:
+        out.update(tokenize(item))
 
-        # Проверяем, что сниппет не начинается или не заканчивается посреди слова
-        if start_index > 0 and not text[start_index-1].isspace():
-            start_index = text.find(" ", start_index) + 1
-        if end_index < len(text) and not text[end_index].isspace():
-            end_index = text.rfind(" ", 0, end_index)
+    # отбрасываем слишком короткие слова
+    out = {w for w in out if len(w) >= 3}
+    return out
 
-        snippet = text[start_index:end_index].strip()
+# ----------------------- Индекс ----------------------------
+def build_law_index(laws: List[Dict[str, Any]], text_limit_chars: int = 6000) -> Dict[str, Set[int]]:
+    """
+    Инвертированный индекс по title + части текста.
+    Ограничиваемся первыми N символами, чтобы не раздувать память.
+    """
+    index: Dict[str, Set[int]] = {}
 
-        if len(snippet) > len(best_snippet):
-            best_snippet = snippet
+    for i, law in enumerate(laws):
+        title = law.get("title", "")
+        text = law.get("text", "")
 
-    if not best_snippet:
-        return text[:max_length] + "..." if len(text) > max_length else text
+        # индексируем заголовок полностью
+        for tok in tokenize(title):
+            index.setdefault(tok, set()).add(i)
 
-    return best_snippet + "..." if len(best_snippet) > max_length else best_snippet
+        # и первые N символов текста, чтобы ловить ключевые термины
+        if text:
+            fragment = text[:text_limit_chars]
+            for tok in tokenize(fragment):
+                index.setdefault(tok, set()).add(i)
 
+    return index
 
+# ----------------------- Утилита описания ------------------
+def short_first_sentence(text: str, max_chars: int = 200) -> str:
+    """
+    Первая фраза для краткого описания (если когда-нибудь понадобится).
+    Сейчас не используется (мы не цитируем длинные тексты),
+    но оставлено на будущее.
+    """
+    if not text:
+        return ""
+    clean = re.sub(r"\s+", " ", text).strip()
+    # до первой точки/перевода строки
+    m = re.search(r"[\.!\?]\s", clean)
+    sent = clean if not m else clean[: m.end()].strip()
+    if len(sent) > max_chars:
+        sent = sent[:max_chars].rstrip() + "…"
+    return sent
