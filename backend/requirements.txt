@@ -7,3 +7,4 @@ Pillow
 bleach
 flask-cors
 gunicorn
+rank-bm25
