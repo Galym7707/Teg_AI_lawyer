@@ -231,6 +231,13 @@ def api_ask():
         log.exception("❌ Ошибка при обработке вопроса")
         return _json_error(500, "INTERNAL_ERROR", str(e))
 
+# --- ALIAS: принимать также /ask без префикса, на случай кривого прокси ---
+@app.route("/ask", methods=["POST", "OPTIONS"])
+def ask_alias():
+    # Просто используем ту же логику, что и /api/ask
+    # Импортируем прямо тут, чтобы избежать циклических импортов:
+    return api_ask()
+
 # Корневой
 @app.route("/", methods=["GET"])
 def root():
