@@ -1,0 +1,52 @@
+name: Nightly Laws Auto-Update
+
+on:
+  schedule:
+    # Запуск каждый день в 03:00 по Алматы (UTC+6) => 21:00 UTC предыдущего дня
+    - cron: "0 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-laws:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps for updater
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-generativeai requests beautifulsoup4 lxml chardet pyyaml
+
+      - name: Run updater
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # добавь в репо Secrets
+          LLM_MODEL: gemini-1.5-flash
+          LAWS_JSON: backend/laws/kazakh_laws.json
+          SOURCES_YAML: tools/sources.yaml
+          DRY_RUN: "false"
+        run: |
+          python tools/update_laws.py
+
+      - name: Commit & push if file changed
+        run: |
+          if git status --porcelain | grep -q "backend/laws/kazakh_laws.json"; then
+            git config user.name "${{ github.actor }}"
+            git config user.email "${{ github.actor }}@users.noreply.github.com"
+            git add backend/laws/kazakh_laws.json
+            git commit -m "chore(laws): nightly auto-update (cleanup & sync) [skip ci]"
+            git push
+          else
+            echo "No changes to commit."
+          fi
