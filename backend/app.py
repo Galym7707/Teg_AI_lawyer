@@ -3,11 +3,13 @@ import os
 import json
 import time
 import logging
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-
+import psycopg2
+from psycopg2.extras import Json
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
+import threading
 
 from helpers import (
     init_index,
@@ -17,6 +19,8 @@ from helpers import (
     web_enrich_official_sources,
     sanitize_html,  # <-- добавили
 )
+
+
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -32,8 +36,90 @@ else:
     CORS(app, supports_credentials=True)
     log.warning("⚠️  FRONTEND_ORIGIN не задан — CORS открыт для всех (dev only).")
 
-DOCS, INDEX = init_index()
-log.info("✅ Индекс готов: %d фрагментов", len(DOCS))
+# Lazy loading для индекса законов
+class LazyIndex:
+    def __init__(self):
+        self._docs = None
+        self._index = None
+        self._lock = threading.Lock()
+        self._initialized = False
+        self._error = None
+    
+    def _init_index(self):
+        """Инициализация индекса при первом обращении"""
+        if self._initialized:
+            return
+        
+        with self._lock:
+            if self._initialized:  # Double-check locking
+                return
+            
+            try:
+                log.info("🔄 Инициализация индекса законов...")
+                self._docs, self._index = init_index()
+                self._initialized = True
+                log.info("✅ Индекс готов: %d фрагментов", len(self._docs))
+            except Exception as e:
+                self._error = e
+                log.error("❌ Ошибка инициализации индекса: %s", e)
+                raise
+    
+    @property
+    def docs(self):
+        if not self._initialized:
+            self._init_index()
+        if self._error:
+            raise self._error
+        return self._docs
+    
+    @property
+    def index(self):
+        if not self._initialized:
+            self._init_index()
+        if self._error:
+            raise self._error
+        return self._index
+    
+    def is_ready(self) -> bool:
+        """Проверка готовности индекса"""
+        return self._initialized and self._error is None
+
+# Глобальный экземпляр lazy index
+LAZY_INDEX = LazyIndex()
+
+# Database setup
+DB_DSN = os.getenv("DATABASE_URL")
+DB = None
+if DB_DSN:
+    try:
+        DB = psycopg2.connect(DB_DSN)
+        with DB, DB.cursor() as cur:
+            cur.execute("""
+            create table if not exists qa_logs (
+              id bigserial primary key,
+              ts timestamptz default now(),
+              question text not null,
+              answer_html text not null,
+              intent text,
+              matches jsonb
+            )
+            """)
+        log.info("✅ DB logging enabled")
+    except Exception as e:
+        log.warning("DB connect failed: %s", e)
+        DB = None
+
+def _log_qa(question: str, answer_html: str, intent: str, matches: List[Dict]):
+    if not DB:
+        return
+    try:
+        with DB, DB.cursor() as cur:
+            cur.execute(
+                "insert into qa_logs(question, answer_html, intent, matches) values (%s, %s, %s, %s)",
+                (question, answer_html, intent, Json(matches))
+            )
+    except Exception as e:
+        log.warning("DB log failed: %s", e)
 
 # Параметры LLM
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -91,7 +177,16 @@ def json_error(status: int, code: str, message: str, debug: Dict = None):
 @app.route("/api/health", methods=["GET"])
 def health():
     llm_ready = bool(os.getenv("GEMINI_API_KEY"))
-    return jsonify({"ok": True, "laws_count": len(DOCS), "llm": llm_ready, "message": "alive"})
+    index_ready = LAZY_INDEX.is_ready()
+    laws_count = len(LAZY_INDEX.docs) if index_ready else 0
+    
+    return jsonify({
+        "ok": True, 
+        "laws_count": laws_count, 
+        "index_ready": index_ready,
+        "llm": llm_ready, 
+        "message": "alive"
+    })
 
 def _handle_ask():
     started = time.time()
@@ -102,7 +197,11 @@ def _handle_ask():
 
     log.info("👤 Вопрос: %s", question)
 
-    hits, intent = search_laws(question, DOCS, INDEX, top_k=5)
+    # Проверяем готовность индекса
+    if not LAZY_INDEX.is_ready():
+        return json_error(503, "INDEX_NOT_READY", "Индекс законов ещё не готов. Попробуйте через несколько секунд.")
+
+    hits, intent = search_laws(question, LAZY_INDEX.docs, LAZY_INDEX.index, top_k=5)
     log.info("🔎 Совпадений: %d | intent: %s", len(hits), intent)
 
     # Веб-обогащение (если заданы ключи)
@@ -129,6 +228,16 @@ def _handle_ask():
     answer_html = sanitize_html(answer_html)  # <-- главное исправление
     took = int((time.time() - started) * 1000)
     log.info("✅ Ответ готов (%d симв) за %d мс", len(answer_html), took)
+
+    _log_qa(question, answer_html, intent, [
+        {
+            "article_title": r.get("article_title"),
+            "law_title": r.get("law_title"),
+            "source": r.get("source"),
+            "score": s
+        }
+        for r, s in hits
+    ])
 
     return jsonify({
         "ok": True,

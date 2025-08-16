@@ -3,6 +3,7 @@ import os
 import re
 import json
 import logging
+import html
 from typing import List, Dict, Tuple, Optional
 
 import google.generativeai as genai
@@ -27,9 +28,14 @@ FORBIDDEN_REFERRALS = [
 # какие теги разрешаем рендерить как HTML (остальное экранируется)
 _ALLOWED_TAGS = [
     "p", "ul", "ol", "li", "strong", "em", "br", "h3", "h4", "blockquote",
-    "pre", "code", "hr", "span", "small"
+    "pre", "code", "hr", "span", "small", "a"
 ]
-_ALLOWED_ATTRS = {"span": ["class"], "pre": ["class"], "code": ["class"]}
+_ALLOWED_ATTRS = {
+    "span": ["class"],
+    "pre": ["class"],
+    "code": ["class"],
+    "a": ["href", "target", "rel"]
+}
 
 def enforce_rules(html: str) -> str:
     """Убираем «идите к юристу», чистим мусор, нормализуем отступы."""
@@ -45,6 +51,11 @@ def enforce_rules(html: str) -> str:
     # 3) убираем лишние пустые абзацы/переводы строк
     text = re.sub(r"(\s*<br\s*/?>\s*){3,}", "<br>", text, flags=re.I)
     text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # 4) убрать пустые параграфы
+    text = re.sub(r"<p>\s*(?:&nbsp;)?\s*</p>", "", text, flags=re.I)
+    # сжать подряд идущие пустые параграфы
+    text = re.sub(r"(?:<p>\s*</p>){2,}", "", text, flags=re.I)
 
     return text.strip()
 
@@ -407,8 +418,41 @@ def call_llm(question: str,
         txt = (r.text or "").strip()
         # На всякий случай заменим **...** → <strong>…</strong>
         txt = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", txt)
-        txt = txt.replace("\n", "<br>")
-        return sanitize_html(txt)
+        # Корректное экранирование HTML и обработка переносов строк
+        txt = html.escape(txt)
+        txt = txt.replace("&lt;br&gt;", "<br>")  # Восстанавливаем <br> после экранирования
+        txt = txt.replace("&lt;/p&gt;", "</p>")  # Восстанавливаем </p> после экранирования
+        txt = txt.replace("&lt;p&gt;", "<p>")    # Восстанавливаем <p> после экранирования
+        txt = txt.replace("&lt;strong&gt;", "<strong>")  # Восстанавливаем <strong> после экранирования
+        txt = txt.replace("&lt;/strong&gt;", "</strong>")  # Восстанавливаем </strong> после экранирования
+        txt = txt.replace("&lt;ul&gt;", "<ul>")  # Восстанавливаем <ul> после экранирования
+        txt = txt.replace("&lt;/ul&gt;", "</ul>")  # Восстанавливаем </ul> после экранирования
+        txt = txt.replace("&lt;li&gt;", "<li>")  # Восстанавливаем <li> после экранирования
+        txt = txt.replace("&lt;/li&gt;", "</li>")  # Восстанавливаем </li> после экранирования
+        txt = txt.replace("&lt;h3&gt;", "<h3>")  # Восстанавливаем <h3> после экранирования
+        txt = txt.replace("&lt;/h3&gt;", "</h3>")  # Восстанавливаем </h3> после экранирования
+        txt = txt.replace("&lt;pre&gt;", "<pre>")  # Восстанавливаем <pre> после экранирования
+        txt = txt.replace("&lt;/pre&gt;", "</pre>")  # Восстанавливаем </pre> после экранирования
+        txt = txt.replace("&lt;a&gt;", "<a>")  # Восстанавливаем <a> после экранирования
+        txt = txt.replace("&lt;/a&gt;", "</a>")  # Восстанавливаем </a> после экранирования
+        txt = txt.replace("&lt;em&gt;", "<em>")  # Восстанавливаем <em> после экранирования
+        txt = txt.replace("&lt;/em&gt;", "</em>")  # Восстанавливаем </em> после экранирования
+        txt = txt.replace("&lt;ol&gt;", "<ol>")  # Восстанавливаем <ol> после экранирования
+        txt = txt.replace("&lt;/ol&gt;", "</ol>")  # Восстанавливаем </ol> после экранирования
+        txt = txt.replace("&lt;blockquote&gt;", "<blockquote>")  # Восстанавливаем <blockquote> после экранирования
+        txt = txt.replace("&lt;/blockquote&gt;", "</blockquote>")  # Восстанавливаем </blockquote> после экранирования
+        txt = txt.replace("&lt;code&gt;", "<code>")  # Восстанавливаем <code> после экранирования
+        txt = txt.replace("&lt;/code&gt;", "</code>")  # Восстанавливаем </code> после экранирования
+        txt = txt.replace("&lt;hr&gt;", "<hr>")  # Восстанавливаем <hr> после экранирования
+        txt = txt.replace("&lt;span&gt;", "<span>")  # Восстанавливаем <span> после экранирования
+        txt = txt.replace("&lt;/span&gt;", "</span>")  # Восстанавливаем </span> после экранирования
+        txt = txt.replace("&lt;small&gt;", "<small>")  # Восстанавливаем <small> после экранирования
+        txt = txt.replace("&lt;/small&gt;", "</small>")  # Восстанавливаем </small> после экранирования
+        txt = txt.replace("&lt;h4&gt;", "<h4>")  # Восстанавливаем <h4> после экранирования
+        txt = txt.replace("&lt;/h4&gt;", "</h4>")  # Восстанавливаем </h4> после экранирования
+        # Заменяем переносы строк на <br> только для обычного текста
+        txt = re.sub(r'(?<!&lt;)(?<!<)(?<!>)\n(?!&gt;)(?!>)', '<br>', txt)
+        return postprocess_html(txt)
     except Exception as e:
         log.exception("LLM error: %s", e)
         return ""

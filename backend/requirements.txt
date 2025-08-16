@@ -9,3 +9,5 @@ flask-cors
 gunicorn
 rank-bm25
 requests
+psycopg2-binary
+pyyaml
