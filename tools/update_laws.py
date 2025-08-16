@@ -3,7 +3,7 @@
 Nightly updater for backend/laws/kazakh_laws.json
 
 Функции:
-- Тянет страницы из tools/sources.yaml (или дефолтный список).
+- Тянет страницы из дефолтного списка источников.
 - Добывает основной текст (bs4), делает грубую очистку (регэкспы).
 - При наличии GEMINI_API_KEY прогоняет через LLM-очиститель по кускам.
 - Обновляет backend/laws/kazakh_laws.json (с тем же форматом: [{title,text,source}]).
@@ -13,6 +13,8 @@ Nightly updater for backend/laws/kazakh_laws.json
 - Ничего не «выдумывает»: LLM только чистит/нормализует текст (инструкция в prompt).
 - Если сайт меняет разметку/блокирует, падать не будет — просто пропустит источник.
 """
+from tenacity import retry, stop_after_attempt, wait_exponential
+import logging
 import os
 import re
 import json
@@ -40,7 +42,6 @@ except Exception:
 # ---- пути/конфиги ----
 ROOT = Path(__file__).resolve().parents[1]  # корень репо
 LAWS_JSON = Path(os.getenv("LAWS_JSON", ROOT / "backend" / "laws" / "kazakh_laws.json"))
-SOURCES_YAML = Path(os.getenv("SOURCES_YAML", ROOT / "tools" / "sources.yaml"))
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 DEFAULT_SOURCES = [
@@ -49,18 +50,6 @@ DEFAULT_SOURCES = [
     {"title": "Гражданский процессуальный кодекс Республики Казахстан", "url": "https://adilet.zan.kz/rus/docs/K1500000377"},
     {"title": "Уголовный кодекс Республики Казахстан", "url": "https://adilet.zan.kz/rus/docs/K1400000226"},
 ]
-
-def load_sources() -> List[Dict]:
-    if SOURCES_YAML.exists():
-        try:
-            import yaml  # pyyaml
-            with SOURCES_YAML.open("r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-            if isinstance(data, dict) and isinstance(data.get("sources"), list):
-                return data["sources"]
-        except Exception as e:
-            print(f"[WARN] Не удалось прочитать {SOURCES_YAML}: {e}")
-    return DEFAULT_SOURCES
 
 # ---- базовые утилиты ----
 def sha256_text(s: str) -> str:
@@ -106,6 +95,55 @@ def fetch_url(url: str, timeout=40) -> Optional[str]:
     except Exception as e:
         print(f"[WARN] Не удалось скачать {url}: {e}")
         return None
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def fetch_egov_laws() -> List[Dict]:
+    """Получает список НПА с data.egov.kz с retry-логикой."""
+    url = "https://data.egov.kz/api/v4/dataset"
+    params = {
+        "source": json.dumps({
+            "query": {"match": {"category": "Нормативные правовые акты"}},
+            "size": 100  # Увеличил лимит
+        })
+    }
+    
+    response = requests.get(url, params=params, timeout=15)
+    response.raise_for_status()  # Проверка на ошибки HTTP
+    data = response.json()
+    
+    # Исправление 1: Правильная обработка формата ответа API
+    if not isinstance(data, dict):
+        print(f"[WARN] API вернул не словарь: {type(data)}")
+        return []
+    
+    # Безопасное извлечение hits с проверкой структуры
+    hits = data.get("hits", [])
+    if not isinstance(hits, list):
+        print(f"[WARN] Поле 'hits' не является списком: {type(hits)}")
+        return []
+    
+    result = []
+    for item in hits:
+        # Исправление 2: Проверка структуры данных
+        if not isinstance(item, dict):
+            print(f"[WARN] Элемент в hits не является словарем: {type(item)}")
+            continue
+        
+        title = item.get("title", "Без названия")
+        url = item.get("download_url")
+        
+        if not url:
+            print(f"[WARN] Нет download_url для элемента: {title}")
+            continue
+        
+        result.append({
+            "title": title,
+            "url": url,
+            "updated_at": item.get("last_updated", ""),
+            "source": "data.egov.kz"  # Добавил источник
+        })
+    
+    return result
 
 def extract_main_text(html: str) -> str:
     soup = BeautifulSoup(html, "lxml")
@@ -248,11 +286,14 @@ def main():
     ensure_parent(LAWS_JSON)
     items = load_json_list(LAWS_JSON)
 
-    # индекс по title
-    by_title = { (it.get("title") or "").strip().lower(): it for it in items }
+    # 1. Загрузка данных из дефолтного списка источников
+    sources = DEFAULT_SOURCES.copy()
+    print(f"[INFO] Всего локальных источников: {len(sources)}")
 
-    sources = load_sources()
-    print(f"[INFO] Всего источников: {len(sources)}")
+    # 2. Загрузка данных с data.egov.kz
+    egov_laws = fetch_egov_laws()
+    print(f"[INFO] Получено НПА с data.egov.kz: {len(egov_laws)}")
+    sources.extend(egov_laws)  # Объединяем источники
 
     total_changes = 0
     for s in sources:

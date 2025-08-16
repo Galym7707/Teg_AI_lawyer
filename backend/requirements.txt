@@ -11,3 +11,6 @@ rank-bm25
 requests
 psycopg2-binary
 pyyaml
+tenacity
+chardet
+bs4
