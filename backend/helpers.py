@@ -4,6 +4,7 @@ import re
 import json
 import logging
 import html
+import time
 from typing import List, Dict, Tuple, Optional
 
 import google.generativeai as genai
@@ -178,11 +179,13 @@ def load_normalized_or_fallback() -> List[Dict]:
     Пытаемся взять laws/normalized.jsonl (нормализованные фрагменты).
     Если файла нет — читаем сырой kazakh_laws.json.
     """
+    start = time.time()
     base = os.path.dirname(os.path.abspath(__file__))
     norm_path = os.path.join(base, "laws", "normalized.jsonl")
     if os.path.exists(norm_path):
         docs = _read_jsonl(norm_path)
         log.info("✅ Используем normalized.jsonl: %d фрагментов", len(docs))
+        log.info(f"✅ Индекс загружен за {time.time()-start:.2f} сек")
         return docs
 
     raw_path = os.path.join(base, "laws", "kazakh_laws.json")
@@ -196,6 +199,7 @@ def load_normalized_or_fallback() -> List[Dict]:
             "plain_text": (x.get("text") or "").strip()
         })
     log.warning("⚠️ normalized.jsonl не найден — работаем по сырому корпусу (%d записей)", len(docs))
+    log.info(f"✅ Индекс загружен за {time.time()-start:.2f} сек")
     return docs
 
 # =========================
@@ -219,8 +223,15 @@ class LawIndex:
         return [(self.docs[i], float(s)) for i, s in idx_scores if s > 0.0]
 
 def init_index() -> Tuple[List[Dict], LawIndex]:
-    docs = load_normalized_or_fallback()
-    return docs, LawIndex(docs)
+    try:
+        laws_path = os.path.join(os.path.dirname(__file__), "laws", "kazakh_laws.json")
+        if not os.path.exists(laws_path):
+            raise FileNotFoundError(f"Файл законов не найден: {laws_path}")
+        docs = load_normalized_or_fallback()
+        return docs, LawIndex(docs)
+    except Exception as e:
+        log.error(f"❌ Critical: {str(e)}")
+        raise
 
 # =========================
 # Детекция намерений

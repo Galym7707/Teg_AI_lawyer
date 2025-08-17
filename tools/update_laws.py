@@ -41,7 +41,7 @@ except Exception:
 
 # ---- пути/конфиги ----
 ROOT = Path(__file__).resolve().parents[1]  # корень репо
-LAWS_JSON = Path(os.getenv("LAWS_JSON", ROOT / "backend" / "laws" / "kazakh_laws.json"))
+LAWS_JSON = Path(os.getenv("LAWS_JSON", str(ROOT / "backend" / "laws" / "kazakh_laws.json")))
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 DEFAULT_SOURCES = [

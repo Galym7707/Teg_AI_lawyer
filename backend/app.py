@@ -60,6 +60,7 @@ class LazyIndex:
                 self._initialized = True
                 log.info("✅ Индекс готов: %d фрагментов", len(self._docs))
             except Exception as e:
+                log.exception("Index init failed")
                 self._error = e
                 log.error("❌ Ошибка инициализации индекса: %s", e)
                 raise
@@ -176,16 +177,21 @@ def json_error(status: int, code: str, message: str, debug: Dict = None):
 @app.route("/health", methods=["GET"])
 @app.route("/api/health", methods=["GET"])
 def health():
+    start_time = time.time()
+    timeout = 30  # сек
+    while not LAZY_INDEX.is_ready() and (time.time() - start_time) < timeout:
+        time.sleep(1)
+    
     llm_ready = bool(os.getenv("GEMINI_API_KEY"))
     index_ready = LAZY_INDEX.is_ready()
     laws_count = len(LAZY_INDEX.docs) if index_ready else 0
     
     return jsonify({
-        "ok": True, 
-        "laws_count": laws_count, 
+        "ok": index_ready,
+        "laws_count": laws_count,
         "index_ready": index_ready,
-        "llm": llm_ready, 
-        "message": "alive"
+        "llm": llm_ready,
+        "message": "ready" if index_ready else "initializing"
     })
 
 def _handle_ask():
