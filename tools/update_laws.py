@@ -41,7 +41,8 @@ except Exception:
 
 # ---- пути/конфиги ----
 ROOT = Path(__file__).resolve().parents[1]  # корень репо
-LAWS_JSON = Path(os.getenv("LAWS_JSON", str(ROOT / "backend" / "laws" / "kazakh_laws.json")))
+RAW_LAWS_JSON = Path(os.getenv("RAW_LAWS_JSON", str(ROOT / "backend" / "laws" / "kazakh_laws.json")))
+NORMALIZED_LAWS = Path(os.getenv("NORMALIZED_LAWS", str(ROOT / "backend" / "laws" / "normalized.jsonl")))
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 DEFAULT_SOURCES = [
@@ -283,8 +284,8 @@ def upsert_entry(items: List[Dict], title: str, text: str, source: str) -> bool:
     return True
 
 def main():
-    ensure_parent(LAWS_JSON)
-    items = load_json_list(LAWS_JSON)
+    ensure_parent(RAW_LAWS_JSON)
+    items = load_json_list(RAW_LAWS_JSON)
 
     # 1. Загрузка данных из дефолтного списка источников
     sources = DEFAULT_SOURCES.copy()
@@ -328,8 +329,8 @@ def main():
         return
 
     # сохраняем — пусть в git определяет, есть ли реальные изменения
-    save_json_list(LAWS_JSON, items_sorted)
-    print(f"[DONE] Готово. Изменений: {total_changes}. Файл: {LAWS_JSON}")
+    save_json_list(RAW_LAWS_JSON, items_sorted)
+    print(f"[DONE] Готово. Изменений: {total_changes}. Файл: {RAW_LAWS_JSON}")
 
 if __name__ == "__main__":
     main()

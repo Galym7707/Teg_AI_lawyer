@@ -28,6 +28,14 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+@app.before_first_request
+def check_files():
+    laws_path = os.path.join(os.path.dirname(__file__), "laws", "normalized.jsonl")
+    if not os.path.exists(laws_path):
+        log.error(f"❌ Файл normalized.jsonl не найден по пути: {laws_path}")
+    else:
+        log.info(f"✅ Файл normalized.jsonl найден, размер: {os.path.getsize(laws_path)/1024:.1f} KB")
+
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "")
 if FRONTEND_ORIGIN:
     CORS(app, origins=[FRONTEND_ORIGIN], supports_credentials=True)
@@ -87,6 +95,7 @@ class LazyIndex:
 
 # Глобальный экземпляр lazy index
 LAZY_INDEX = LazyIndex()
+LAZY_INDEX._init_index()  # Принудительная инициализация при старте
 
 # Database setup
 DB_DSN = os.getenv("DATABASE_URL")

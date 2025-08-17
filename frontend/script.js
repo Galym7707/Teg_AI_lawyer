@@ -205,6 +205,16 @@ document.addEventListener('DOMContentLoaded', () => {
        await apiFetch("/health");
     */
 
+    // Проверка готовности сервера
+    async function checkServerReady() {
+        try {
+            const res = await apiFetch("/health");
+            return res.ok && (await res.json()).index_ready;
+        } catch {
+            return false;
+        }
+    }
+
     // Auto-resize textarea
     function autoResize(textarea) {
         textarea.style.height = 'auto';
@@ -286,6 +296,17 @@ document.addEventListener('DOMContentLoaded', () => {
         showLoading();
 
         try {
+            // Проверка готовности сервера
+            if (!(await checkServerReady())) {
+                addMessage('bot', `
+                    <div style="color: #e67e22; padding: 1rem; background: #fef9e7; border-radius: 10px;">
+                        Сервер готовится к работе... Пожалуйста, попробуйте через 10-15 секунд.
+                    </div>
+                `);
+                hideLoading();
+                return;
+            }
+
             const res = await apiFetch("/ask", { 
                 method: "POST", 
                 body: { question: messageText.trim() } 

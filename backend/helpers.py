@@ -175,31 +175,16 @@ def load_laws_json(path: str) -> List[Dict]:
         return json.load(f)
 
 def load_normalized_or_fallback() -> List[Dict]:
-    """
-    Пытаемся взять laws/normalized.jsonl (нормализованные фрагменты).
-    Если файла нет — читаем сырой kazakh_laws.json.
-    """
+    """Загружаем ТОЛЬКО normalized.jsonl"""
     start = time.time()
     base = os.path.dirname(os.path.abspath(__file__))
-    norm_path = os.path.join(base, "laws", "normalized.jsonl")
-    if os.path.exists(norm_path):
-        docs = _read_jsonl(norm_path)
-        log.info("✅ Используем normalized.jsonl: %d фрагментов", len(docs))
-        log.info(f"✅ Индекс загружен за {time.time()-start:.2f} сек")
-        return docs
-
-    raw_path = os.path.join(base, "laws", "kazakh_laws.json")
-    raw = load_laws_json(raw_path)
-    docs = []
-    for x in raw:
-        docs.append({
-            "law_title": (x.get("title") or "").strip() or "Без названия",
-            "article_title": (x.get("title") or "").strip(),
-            "source": x.get("source"),
-            "plain_text": (x.get("text") or "").strip()
-        })
-    log.warning("⚠️ normalized.jsonl не найден — работаем по сырому корпусу (%d записей)", len(docs))
-    log.info(f"✅ Индекс загружен за {time.time()-start:.2f} сек")
+    norm_path = os.path.join(os.path.dirname(__file__), "..", "backend", "laws", "normalized.jsonl")
+    
+    if not os.path.exists(norm_path):
+        raise FileNotFoundError(f"Файл normalized.jsonl не найден по пути: {norm_path}")
+    
+    docs = _read_jsonl(norm_path)
+    log.info(f"✅ Загружено {len(docs)} статей из normalized.jsonl за {time.time()-start:.2f} сек")
     return docs
 
 # =========================
@@ -227,11 +212,16 @@ def init_index() -> Tuple[List[Dict], LawIndex]:
         laws_path = os.path.join(os.path.dirname(__file__), "laws", "kazakh_laws.json")
         if not os.path.exists(laws_path):
             raise FileNotFoundError(f"Файл законов не найден: {laws_path}")
+        
+        log.info("🔄 Загрузка индекса законов...")
+        start_time = time.time()
         docs = load_normalized_or_fallback()
-        return docs, LawIndex(docs)
+        index = LawIndex(docs)
+        log.info(f"✅ Индекс загружен за {time.time()-start_time:.2f} сек")
+        return docs, index
     except Exception as e:
-        log.error(f"❌ Critical: {str(e)}")
-        raise
+        log.exception("❌ Критическая ошибка при загрузке индекса")
+        raise RuntimeError(f"Не удалось загрузить индекс: {str(e)}")
 
 # =========================
 # Детекция намерений

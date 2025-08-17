@@ -36,6 +36,13 @@ jobs:
         run: |
           python backend/tools/update_laws.py
 
+      - name: Preprocess laws
+        env:
+          RAW_LAWS: backend/laws/kazakh_laws.json
+          NORMALIZED_LAWS: backend/laws/normalized.jsonl
+        run: |
+          python tools/preprocess_laws.py
+
       - name: Commit & push changes
         if: github.ref == 'refs/heads/main'  # Только в main-ветке
         run: |
