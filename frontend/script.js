@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     /* В проде уходим напрямую напрямую на Railway, чтобы не ловить 504 от Netlify-прокси. */
     const API_BASE = (window.env && window.env.BACKEND_URL)
         ? window.env.BACKEND_URL + '/api'
-        : 'http://127.0.0.1:5000';
+        : 'https://tegailawyer-production.up.railway.app/api';
 
     // --- PRESET ANSWERS FOR DEMO ---
     const PRESET_ANSWERS = {
