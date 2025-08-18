@@ -284,9 +284,13 @@ def _handle_ask():
     })
 
 #@cross_origin(origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
-@app.route("/ask", methods=["POST"])
+@app.route("/ask", methods=["POST", "OPTIONS"])
 @cross_origin(origins=["https://teg-ai-lawyer.netlify.app"])
 def ask_question():
+    if request.method == "OPTIONS":
+        # Handle preflight request
+        return ("", 204)
+    
     try:
         data = request.get_json(silent=True)
         log.info(f"📥 Получен JSON payload: {data}")  # Log the payload
