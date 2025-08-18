@@ -44,13 +44,23 @@ def check_files():
 # Call the function directly after app creation
 check_files()
 
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "")
-if FRONTEND_ORIGIN:
-    CORS(app, origins=["https://teg-ai-lawyer.netlify.app"], supports_credentials=True)
-    log.info(f"✅ CORS включён для: {FRONTEND_ORIGIN}, https://teg-ai-lawyer.netlify.app")
-else:
-    CORS(app, origins=["https://teg-ai-lawyer.netlify.app"], supports_credentials=True)
-    log.warning("⚠️  FRONTEND_ORIGIN не задан — CORS открыт для https://teg-ai-lawyer.netlify.app")
+# CORS configuration
+allowed_origins = [
+    "https://teg-ai-lawyer.netlify.app",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500"
+]
+
+if os.getenv("FLASK_ENV") == "development":
+    allowed_origins.append("*")
+
+CORS(app, 
+     origins=allowed_origins, 
+     supports_credentials=True,
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "OPTIONS"])
+
+log.info(f"✅ CORS включён для: {allowed_origins}")
 
 # Lazy loading для индекса законов
 class LazyIndex:

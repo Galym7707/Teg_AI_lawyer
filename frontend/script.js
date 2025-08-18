@@ -149,7 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const url = `${API_BASE}${path}`;
       const opts = {
         method: "GET",
-        credentials: "include",
+        credentials: "same-origin",
         ...options,
         headers: {
           "Content-Type": "application/json",
