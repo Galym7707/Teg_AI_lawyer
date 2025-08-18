@@ -1,4 +1,4 @@
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
+const BACKEND_URL = process.env.BACKEND_URL || 'https://tegailawyer-production.up.railway.app/api';
 
 export default async function handler(req, res) {
   const { query } = req;

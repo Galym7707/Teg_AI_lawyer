@@ -1,3 +1,3 @@
 window.env = {
-    BACKEND_URL: 'http://localhost:5000' // Для локальной разработки
+    BACKEND_URL: 'https://tegailawyer-production.up.railway.app/api' // Для локальной разработки
   };

@@ -44,11 +44,11 @@ check_files()
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "")
 if FRONTEND_ORIGIN:
-    CORS(app, origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
-    log.info(f"✅ CORS включён для: {FRONTEND_ORIGIN}, http://localhost:5500")
+    CORS(app, origins=["https://teg-ai-lawyer.netlify.app"], supports_credentials=True)
+    log.info(f"✅ CORS включён для: {FRONTEND_ORIGIN}, https://teg-ai-lawyer.netlify.app")
 else:
-    CORS(app, origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
-    log.warning("⚠️  FRONTEND_ORIGIN не задан — CORS открыт для localhost и 127.0.0.1")
+    CORS(app, origins=["https://teg-ai-lawyer.netlify.app"], supports_credentials=True)
+    log.warning("⚠️  FRONTEND_ORIGIN не задан — CORS открыт для https://teg-ai-lawyer.netlify.app")
 
 # Lazy loading для индекса законов
 class LazyIndex:
@@ -283,8 +283,9 @@ def _handle_ask():
         "took_ms": took
     })
 
+#@cross_origin(origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
 @app.route("/ask", methods=["POST"])
-@cross_origin(origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
+@cross_origin(origins=["https://teg-ai-lawyer.netlify.app"])
 def ask_question():
     try:
         data = request.get_json(silent=True)
