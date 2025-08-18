@@ -32,12 +32,14 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Убедитесь что пути совпадают с фронтендом
+LAWS_PATH = os.path.join(os.path.dirname(__file__), "laws", "normalized.jsonl")
+
 def check_files():
-    laws_path = os.path.join(os.path.dirname(__file__), "laws", "normalized.jsonl")
-    if not os.path.exists(laws_path):
-        log.error(f"❌ Файл normalized.jsonl не найден по пути: {laws_path}")
+    if not os.path.exists(LAWS_PATH):
+        log.error(f"❌ Файл normalized.jsonl не найден по пути: {LAWS_PATH}")
     else:
-        log.info(f"✅ Файл normalized.jsonl найден, размер: {os.path.getsize(laws_path)/1024:.1f} KB")
+        log.info(f"✅ Файл normalized.jsonl найден, размер: {os.path.getsize(LAWS_PATH)/1024:.1f} KB")
 
 # Call the function directly after app creation
 check_files()
@@ -284,7 +286,7 @@ def _handle_ask():
     })
 
 #@cross_origin(origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
-@app.route("/ask", methods=["POST", "OPTIONS"])
+@app.route("/api/ask", methods=["POST", "OPTIONS"])
 @cross_origin(origins=["https://teg-ai-lawyer.netlify.app"])
 def ask_question():
     if request.method == "OPTIONS":

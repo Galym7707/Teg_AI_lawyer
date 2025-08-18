@@ -1,22 +1,20 @@
 const BACKEND_URL = process.env.BACKEND_URL || 'https://tegailawyer-production.up.railway.app/api';
 
 export default async function handler(req, res) {
+  // В начало функции handler
+  if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      return res.status(200).end();
+  }
+
   const { query } = req;
   const path = Array.isArray(query.path) ? query.path.join('/') : query.path || '';
 
   const url = `${BACKEND_URL}/${path}`;
 
   try {
-    // Handle CORS preflight
-    if (req.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader('Access-Control-Max-Age', '86400');
-      return res.status(200).end();
-    }
-
     const headers = {
       'Content-Type': req.headers['content-type'] || 'application/json',
     };
