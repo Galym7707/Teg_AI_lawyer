@@ -31,10 +31,9 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LAWS_JSON: backend/laws/kazakh_laws.json
-          SOURCES_YAML: backend/tools/sources.yaml
           DRY_RUN: "false"
         run: |
-          python backend/tools/update_laws.py
+          python tools/update_laws.py
 
       - name: Preprocess laws
         env:
