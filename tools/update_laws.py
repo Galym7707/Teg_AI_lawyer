@@ -22,10 +22,21 @@ import hashlib
 import datetime as dt
 from pathlib import Path
 from typing import List, Dict, Optional
+from urllib.parse import urljoin, urlparse
 
 import requests
 import chardet
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
+from playwright.sync_api import sync_playwright
+
+def fetch_url_playwright(url, timeout=15000):
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)  # лучше headless=True для GitHub Actions
+        page = browser.new_page()
+        page.goto(url, timeout=timeout)
+        html = page.content()
+        browser.close()
+        return html
 
 # --- опционально LLM (автоматически отключится, если нет ключа) ---
 USE_LLM = False
@@ -51,6 +62,9 @@ DEFAULT_SOURCES = [
     {"title": "Гражданский процессуальный кодекс Республики Казахстан", "url": "https://adilet.zan.kz/rus/docs/K1500000377"},
     {"title": "Уголовный кодекс Республики Казахстан", "url": "https://adilet.zan.kz/rus/docs/K1400000226"},
 ]
+
+# ---- константы для извлечения статей ----
+ARTICLE_LINK_TEXT_RE = re.compile(r"стат(ья|\.|)\s*\d+", flags=re.I)
 
 # ---- базовые утилиты ----
 def sha256_text(s: str) -> str:
@@ -155,6 +169,90 @@ def extract_main_text(html: str) -> str:
     cand = soup.find("main") or soup.find("article") or soup.body or soup
     text = cand.get_text(separator="\n", strip=True)
     return text
+
+def extract_article_links_from_toc(html: str, base_url: str) -> list[dict]:
+    """
+    Находит в странице ссылки на статьи (оглавление).
+    Возвращает список dict: {"article_title": "...", "href": "полный_URL", "anchor": "...", "is_same_page": True/False}
+    """
+    soup = BeautifulSoup(html, "lxml")
+    links = []
+    # 1) быстро искать явные <a> с текстом 'Статья'
+    for a in soup.find_all('a', href=True):
+        txt = (a.get_text(" ", strip=True) or "")
+        if ARTICLE_LINK_TEXT_RE.search(txt):
+            href = a['href'].strip()
+            full = urljoin(base_url, href)
+            is_same = urlparse(full).path == urlparse(base_url).path
+            links.append({"article_title": txt, "href": full, "is_same_page": is_same, "raw_href": href})
+    if links:
+        return links
+
+    # 2) fallback: искать в списках/оглавлении тексты типа "Статья 1. ..." без <a>
+    # На многих страницах элементы оглавления — это просто текстовые <li> или <p>
+    for el in soup.find_all(['li','p','div','span']):
+        txt = (el.get_text(" ", strip=True) or "")
+        if ARTICLE_LINK_TEXT_RE.match(txt):
+            # попытаемся найти вложенный <a>
+            a = el.find('a', href=True)
+            if a:
+                href = a['href']
+                full = urljoin(base_url, href)
+                links.append({"article_title": txt, "href": full, "is_same_page": urlparse(full).path == urlparse(base_url).path, "raw_href": href})
+    return links
+
+def extract_article_text_by_anchor_or_header(page_html: str, locator_href: str, base_url: str) -> str:
+    """
+    Если locator_href — это '...#anchor' (или просто '#anchor'), найдём соответствующий элемент по id/name
+    и соберём текст до следующего заголовка того же/высшего уровня. Если locator_href — full URL,
+    будем возвращать весь текст страницы (или применять heuristics).
+    """
+    soup = BeautifulSoup(page_html, "lxml")
+    parsed = urlparse(locator_href)
+    anchor = parsed.fragment or None
+
+    if anchor:
+        # 1) найти элемент с id=anchor
+        target = soup.find(id=anchor) or soup.find(attrs={"name": anchor})
+        if target:
+            # собираем текст: начинаем от target и берём следующие sibling-ы пока не встретим заголовок того же уровня
+            parts = []
+            # если target — заголовок, добавим его текст
+            if isinstance(target, Tag):
+                title_text = target.get_text(" ", strip=True)
+                if title_text:
+                    parts.append(title_text)
+            # проходим siblings
+            for sib in target.next_siblings:
+                if isinstance(sib, Tag) and sib.name and re.match(r"h[1-6]", sib.name, flags=re.I):
+                    # встретили следующий заголовок — заканчиваем
+                    break
+                # собрать текст контента
+                if isinstance(sib, Tag):
+                    parts.append(sib.get_text("\n", strip=True))
+                elif isinstance(sib, str):
+                    parts.append(sib.strip())
+            return "\n\n".join(p for p in parts if p).strip()
+
+    # Нет anchor или не нашли — попробуем найти заголовок с текстом "Статья N"
+    # Ищем заголовки с похожим текстом
+    for h in soup.find_all(re.compile(r"h[1-6]")):
+        txt = h.get_text(" ", strip=True)
+        if ARTICLE_LINK_TEXT_RE.search(txt):
+            # найдена статья, берем текст между этим заголовком и следующим заголовком того же уровня
+            parts = [txt]
+            for sib in h.next_siblings:
+                if isinstance(sib, Tag) and sib.name and re.match(r"h[1-6]", sib.name, flags=re.I):
+                    break
+                if isinstance(sib, Tag):
+                    parts.append(sib.get_text("\n", strip=True))
+                elif isinstance(sib, str):
+                    parts.append(sib.strip())
+            return "\n\n".join(p for p in parts if p).strip()
+
+    # fallback: просто вернём весь видимый текст
+    main = soup.find("main") or soup.find("article") or soup.body or soup
+    return main.get_text("\n", strip=True)
 
 # ---- грубая очистка (без LLM) ----
 REMOVE_PATTERNS = [
@@ -310,16 +408,55 @@ def main():
             print(f"[WARN] Пропуск {title}: не скачалось")
             continue
 
-        raw_text = extract_main_text(html)
-        step1 = coarse_cleanup(raw_text)
-        step2 = llm_cleanup_full(step1, title) if USE_LLM else step1
+        # 1) сначала пытаемся найти оглавление/ссылки на статьи
+        article_links = extract_article_links_from_toc(html, url)
 
-        changed = upsert_entry(items, title=title, text=step2, source=url)
-        if changed:
-            total_changes += 1
-            print(f"[OK] Обновлено: {title}")
+        if article_links:
+            print(f"[INFO] Найдено {len(article_links)} статей в {title}")
+            # проходим по ссылкам (лучше с небольшим параллелизмом, но с rate-limit)
+            for link_info in article_links:
+                art_title = link_info['article_title']
+                href = link_info['href']
+                is_same = link_info.get('is_same_page', False)
+
+                if is_same or (urlparse(href).netloc == urlparse(url).netloc and urlparse(href).path == urlparse(url).path):
+                    # якорь на той же странице — используем исходный html
+                    art_text = extract_article_text_by_anchor_or_header(html, link_info['raw_href'], url)
+                else:
+                    # отдельная страница — скачиваем
+                    sub_html = fetch_url(href)
+                    if not sub_html:
+                        # fallback: пропустить или взять заголовок без текста
+                        print(f"[WARN] Не удалось скачать статью {art_title}")
+                        continue
+                    art_text = extract_article_text_by_anchor_or_header(sub_html, href, href)
+
+                # доп. грубая очистка
+                art_text = coarse_cleanup(art_text)
+
+                # опционально: прогнать через LLM очистку (llm_cleanup_full)
+                art_text = llm_cleanup_full(art_text, title=art_title) if USE_LLM else art_text
+
+                # Упсерт: сохраняем каждую статью как отдельный элемент (title -> название кодекса, article_title -> название статьи)
+                changed = upsert_entry(items, title=f"{title} — {art_title}", text=art_text, source=href)
+                if changed:
+                    total_changes += 1
+                    print(f"[OK] Обновлена статья: {art_title}")
+                else:
+                    print(f"[OK] Статья без изменений: {art_title}")
         else:
-            print(f"[OK] Без изменений: {title}")
+            # fallback: обрабатываем как раньше — весь документ целиком
+            print(f"[INFO] Статьи не найдены, обрабатываем весь документ: {title}")
+            raw_text = extract_main_text(html)
+            step1 = coarse_cleanup(raw_text)
+            step2 = llm_cleanup_full(step1, title) if USE_LLM else step1
+
+            changed = upsert_entry(items, title=title, text=step2, source=url)
+            if changed:
+                total_changes += 1
+                print(f"[OK] Обновлено: {title}")
+            else:
+                print(f"[OK] Без изменений: {title}")
 
     # сортируем стабильно по title
     items_sorted = sorted(items, key=lambda x: (x.get("title") or "").lower())

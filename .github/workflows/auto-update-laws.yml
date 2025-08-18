@@ -25,7 +25,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 lxml chardet pyyaml google-generativeai
+          pip install requests beautifulsoup4 lxml chardet pyyaml google-generativeai mammoth python-docx bleach
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium
 
       - name: Run updater
         env:

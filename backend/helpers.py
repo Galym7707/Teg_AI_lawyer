@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 import re
 import json
 import logging
@@ -167,6 +169,28 @@ def _read_jsonl(path: str) -> List[Dict]:
             items.append(json.loads(line))
     return items
 
+def load_jsonl(path: str) -> List[Dict]:
+    """
+    Загружает JSONL файл с обработкой ошибок.
+    
+    Args:
+        path: Путь к JSONL файлу
+        
+    Returns:
+        Список словарей из JSONL файла
+    """
+    docs = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                docs.append(json.loads(line))  # строка → dict
+            except Exception as e:
+                print(f"Ошибка при чтении строки JSONL: {e}")
+    return docs
+
 def load_laws_json(path: str) -> List[Dict]:
     if not os.path.isabs(path):
         base = os.path.dirname(os.path.abspath(__file__))
@@ -175,14 +199,14 @@ def load_laws_json(path: str) -> List[Dict]:
         return json.load(f)
 
 def load_normalized_or_fallback() -> List[Dict]:
-    """Загружаем ТОЛЬКО normalized.jsonl"""
+    """Загружаем normalized.jsonl (находится в backend/laws/normalized.jsonl)."""
     start = time.time()
-    base = os.path.dirname(os.path.abspath(__file__))
-    norm_path = os.path.join(os.path.dirname(__file__), "..", "backend", "laws", "normalized.jsonl")
-    
+    # __file__ уже в backend/, поэтому строим корректный путь напрямую
+    norm_path = os.path.join(os.path.dirname(__file__), "laws", "normalized.jsonl")
+
     if not os.path.exists(norm_path):
         raise FileNotFoundError(f"Файл normalized.jsonl не найден по пути: {norm_path}")
-    
+
     docs = _read_jsonl(norm_path)
     log.info(f"✅ Загружено {len(docs)} статей из normalized.jsonl за {time.time()-start:.2f} сек")
     return docs
@@ -209,10 +233,6 @@ class LawIndex:
 
 def init_index() -> Tuple[List[Dict], LawIndex]:
     try:
-        laws_path = os.path.join(os.path.dirname(__file__), "laws", "kazakh_laws.json")
-        if not os.path.exists(laws_path):
-            raise FileNotFoundError(f"Файл законов не найден: {laws_path}")
-        
         log.info("🔄 Загрузка индекса законов...")
         start_time = time.time()
         docs = load_normalized_or_fallback()
@@ -465,3 +485,17 @@ def search_laws(question: str, docs: List[Dict], index: LawIndex, top_k: int = 5
     hits = index.search(question, top_k=top_k)
     intent = detect_intent(question)
     return hits, intent
+
+def detect_intent(question: str) -> dict:
+    """Simple intent detection based on keywords. Returns a dict for consistency."""
+    question = question.lower()
+    intents = {
+        "labor": ["увольн", "работ", "труд", "зарплат", "отпуск"],  # Labor-related
+        "rent": ["аренд", "жиль", "квартир", "найм"],  # Rent-related
+        "crime": ["убийств", "краж", "преступлен", "убили"],  # Crime-related
+        # Add more intents and keywords as needed
+    }
+    for intent_type, keywords in intents.items():
+        if any(keyword in question for keyword in keywords):
+            return {"type": intent_type, "clarify_points": []}  # Can add specific clarify_points per type later
+    return {"type": "generic", "clarify_points": []}

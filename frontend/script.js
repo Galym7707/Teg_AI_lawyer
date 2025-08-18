@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     /* В проде уходим напрямую напрямую на Railway, чтобы не ловить 504 от Netlify-прокси. */
     const API_BASE = (window.env && window.env.BACKEND_URL)
         ? window.env.BACKEND_URL + '/api'
-        : 'https://tegailawyer-production.up.railway.app/api';
+        : 'http://127.0.0.1:5000';
 
     // --- PRESET ANSWERS FOR DEMO ---
     const PRESET_ANSWERS = {
@@ -169,6 +169,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (_) {}
 
       console.debug("→ fetch", url, { ...opts, body: bodyPreview });
+      console.log('Fetching:', url, 'Options:', opts, 'Body stringified:', opts.body);
 
       for (let i = 0; i <= retries; i++) {
         try {
@@ -307,6 +308,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            console.log('Sending payload:', { question: messageText.trim() });
             const res = await apiFetch("/ask", { 
                 method: "POST", 
                 body: { question: messageText.trim() } 

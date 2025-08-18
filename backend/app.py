@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
+from dotenv import load_dotenv  # Add this
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 import json
 import time
 import logging
@@ -10,6 +12,7 @@ from psycopg2.extras import Json
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import threading
+from flask_cors import cross_origin
 
 from helpers import (
     init_index,
@@ -18,6 +21,7 @@ from helpers import (
     call_llm,
     web_enrich_official_sources,
     sanitize_html,  # <-- добавили
+    load_jsonl,  # <-- добавили
 )
 
 
@@ -28,7 +32,6 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-@app.before_first_request
 def check_files():
     laws_path = os.path.join(os.path.dirname(__file__), "laws", "normalized.jsonl")
     if not os.path.exists(laws_path):
@@ -36,13 +39,16 @@ def check_files():
     else:
         log.info(f"✅ Файл normalized.jsonl найден, размер: {os.path.getsize(laws_path)/1024:.1f} KB")
 
+# Call the function directly after app creation
+check_files()
+
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "")
 if FRONTEND_ORIGIN:
-    CORS(app, origins=[FRONTEND_ORIGIN], supports_credentials=True)
-    log.info(f"✅ CORS включён для: {FRONTEND_ORIGIN}")
+    CORS(app, origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
+    log.info(f"✅ CORS включён для: {FRONTEND_ORIGIN}, http://localhost:5500")
 else:
-    CORS(app, supports_credentials=True)
-    log.warning("⚠️  FRONTEND_ORIGIN не задан — CORS открыт для всех (dev only).")
+    CORS(app, origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
+    log.warning("⚠️  FRONTEND_ORIGIN не задан — CORS открыт для localhost и 127.0.0.1")
 
 # Lazy loading для индекса законов
 class LazyIndex:
@@ -170,8 +176,15 @@ def get_json_payload() -> Tuple[Dict, Dict]:
     payload = {}
     if raw:
         try:
-            payload = json.loads(raw.decode("utf-8", errors="replace"))
+            decoded = raw.decode("utf-8", errors="replace")
+            log.info(f"📥 Декодированный запрос: {decoded}")  # Log raw decoded data
+            payload = json.loads(decoded)
+            if not isinstance(payload, dict):
+                log.error(f"❌ Payload не является словарем: {payload}")
+                dbg["json_error"] = "Payload is not a dictionary"
+                payload = {}
         except Exception as e:
+            log.error(f"❌ Ошибка парсинга JSON: {str(e)}")
             dbg["json_error"] = str(e)
     return payload, dbg
 
@@ -217,7 +230,7 @@ def _handle_ask():
         return json_error(503, "INDEX_NOT_READY", "Индекс законов ещё не готов. Попробуйте через несколько секунд.")
 
     hits, intent = search_laws(question, LAZY_INDEX.docs, LAZY_INDEX.index, top_k=5)
-    log.info("🔎 Совпадений: %d | intent: %s", len(hits), intent)
+    log.info("🔎 Совпадений: %d | intent: %s", len(hits), intent['type'])
 
     # Веб-обогащение (если заданы ключи)
     web_sources: List[Dict] = []
@@ -239,7 +252,7 @@ def _handle_ask():
         log.exception("LLM fail: %s", e)
 
     # Финальная сборка + санитайзер
-    answer_html = (llm_html.strip() or build_html_answer(question, hits, intent, web_sources)).strip()
+    answer_html = (llm_html.strip() or build_html_answer(question, hits, intent)).strip()
     answer_html = sanitize_html(answer_html)  # <-- главное исправление
     took = int((time.time() - started) * 1000)
     log.info("✅ Ответ готов (%d симв) за %d мс", len(answer_html), took)
@@ -270,16 +283,22 @@ def _handle_ask():
         "took_ms": took
     })
 
-@app.route("/ask", methods=["POST", "OPTIONS"])
-@app.route("/api/ask", methods=["POST", "OPTIONS"])
-def ask():
-    if request.method == "OPTIONS":
-        return ("", 204)
+@app.route("/ask", methods=["POST"])
+@cross_origin(origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
+def ask_question():
     try:
-        return _handle_ask()
+        data = request.get_json(silent=True)
+        log.info(f"📥 Получен JSON payload: {data}")  # Log the payload
+        return _handle_ask()  # Delegate to _handle_ask
     except Exception as e:
-        log.exception("🔥 INTERNAL_ERROR in /ask: %s", e)
-        return json_error(500, "INTERNAL_ERROR", str(e))
+        log.error(f"❌ Произошла непредвиденная ошибка: {str(e)}", exc_info=True)
+        return jsonify({
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": str(e)
+            },
+            "ok": False
+        }), 500
 
 @app.route("/", methods=["GET"])
 def root_404():
